@@ -157,6 +157,42 @@ describe('body transforms (not supported yet)', () => {
   });
 });
 
+describe('framing headers', () => {
+  it('cannot be added or removed by a request transform: ignored with a startup warning', async (t) => {
+    const warn = t.mock.method(process, 'emitWarning', () => {});
+    const route = routeWith({
+      request_transform: {
+        headers: { remove: ['Transfer-Encoding', 'x-drop'], add: { 'Content-Length': '1', 'X-Ok': 'fine' } },
+      },
+    });
+    let seen: IncomingHttpHeaders | undefined;
+    const capture: Handler = async (req) => {
+      seen = req.headers;
+      return { status: 200, headers: {}, body: undefined };
+    };
+    await requestTransformPlugin.build(route, ctx)!(capture)(
+      requestFor(route, { 'transfer-encoding': 'chunked', 'x-drop': '1' }),
+    );
+    assert.deepEqual(seen, { 'transfer-encoding': 'chunked', 'x-ok': 'fine' }, 'only the other entries were applied');
+    assert.deepEqual(
+      warn.mock.calls.map((call) => call.arguments[0]),
+      [
+        'route /edge: request_transform.headers: "Transfer-Encoding" is controlled by the gateway (message framing); ignored',
+        'route /edge: request_transform.headers: "Content-Length" is controlled by the gateway (message framing); ignored',
+      ],
+    );
+  });
+
+  it('cannot be changed by a response transform either', async (t) => {
+    const warn = t.mock.method(process, 'emitWarning', () => {});
+    const route = routeWith({ response_transform: { headers: { add: { 'content-length': '0' } } } });
+    const upstream: Handler = async () => ({ status: 200, headers: { 'content-length': '2' }, body: Buffer.from('{}') });
+    const res = await responseTransformPlugin.build(route, ctx)!(upstream)(requestFor(route));
+    assert.deepEqual(res.headers, { 'content-length': '2' });
+    assert.equal(warn.mock.callCount(), 1);
+  });
+});
+
 describe('header transforms through the gateway', () => {
   it('rewrites upstream request headers and client response headers, but not gateway errors', async () => {
     const mocks = await startMocks('echo');

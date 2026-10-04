@@ -1,5 +1,5 @@
 import type { Plugin } from '../pipeline.ts';
-import { resolveTemplate, transformHeaders } from './template.ts';
+import { withoutFramingHeaders, resolveTemplate, transformHeaders } from './template.ts';
 
 /**
  * Rewrites the headers of the upstream response. Errors the gateway generates
@@ -14,8 +14,8 @@ export const responseTransformPlugin: Plugin = {
     // Body envelopes are issue #10. This plugin claims the whole feature, so the
     // core no longer warns about it; say so here instead of silently ignoring it.
     if (config.body) process.emitWarning(`route ${route.path}: response_transform.body is not supported yet and is ignored`);
-    const headers = config.headers;
-    if (!headers) return undefined;
+    if (!config.headers) return undefined;
+    const headers = withoutFramingHeaders(config.headers, `route ${route.path}: response_transform.headers`);
 
     return (next) => async (req) => {
       const response = await next(req);
