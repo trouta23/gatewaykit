@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import http from 'node:http';
+import net from 'node:net';
 import type { IncomingMessage } from 'node:http';
 import { after, before, describe, it } from 'node:test';
 import { rawRequest, startGateway } from './helpers.ts';
@@ -222,5 +223,31 @@ describe('transport hardening', () => {
     assert.equal(res.status, 200);
     assert.deepEqual(upstream.recorded.get('/patient/binary')!.body, payload);
     assert.deepEqual(Buffer.from(await res.arrayBuffer()), payload);
+  });
+});
+
+describe('upstream protocol upgrades', () => {
+  it('answers 502 promptly when an upstream replies 101 Switching Protocols', { timeout: 5_000 }, async () => {
+    // Upgrades (e.g. WebSocket) aren't proxied. This upstream answers 101 anyway.
+    const upstream = net.createServer((socket) => {
+      socket.once('data', () => socket.write('HTTP/1.1 101 Switching Protocols\r\nConnection: upgrade\r\nUpgrade: websocket\r\n\r\n'));
+      socket.on('error', () => {});
+    });
+    upstream.listen(0, '127.0.0.1');
+    await once(upstream, 'listening');
+    const { port } = upstream.address() as net.AddressInfo;
+    const gateway = await startGateway({
+      routes: [{ path: '/ws', methods: ['GET'], upstream: { url: `http://127.0.0.1:${port}`, timeout: '2s' } }],
+    });
+    try {
+      const started = Date.now();
+      const res = await rawRequest(gateway.url, '/ws');
+      assert.equal(res.status, 502);
+      assert.equal(JSON.parse(res.body).error, 'bad_gateway');
+      assert.ok(Date.now() - started < 1_000, 'settled without waiting for the 2s deadline');
+    } finally {
+      await gateway.close();
+      upstream.close();
+    }
   });
 });
