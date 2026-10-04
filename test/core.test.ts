@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
-import { DEAD_UPSTREAM, startGateway, startMocks } from './helpers.ts';
+import { DEAD_UPSTREAM, rawRequest, startGateway, startMocks } from './helpers.ts';
 import type { TestGateway } from './helpers.ts';
 
 // Deliberately unrelated to config/gateway.yaml: different paths, methods,
@@ -76,10 +76,29 @@ describe('core gateway', () => {
   });
 
   it('resolves dot segments before matching, so paths cannot hop between routes', async () => {
-    const res = await fetch(`${gateway.url}/v2/beta/..%2F../../alpha`.replace('%2F', '/'));
-    const echo = await res.json();
+    const res = await rawRequest(gateway.url, '/v2/beta/../../alpha/x');
+    const echo = JSON.parse(res.body);
     assert.equal(echo.upstream, 'alpha');
-    assert.equal(echo.url, '/alpha');
+    assert.equal(echo.url, '/alpha/x');
+  });
+
+  it('forwards the raw query string byte-for-byte', async () => {
+    const res = await rawRequest(gateway.url, "/alpha/q?name='o''neil'&empty=&flag");
+    assert.equal(JSON.parse(res.body).url, "/alpha/q?name='o''neil'&empty=&flag");
+  });
+
+  it('re-frames a chunked body on a GET so it cannot smuggle a second request', async () => {
+    const before = mocks.alpha.requests.length;
+    const smuggled = 'GET /alpha/smuggled HTTP/1.1\r\nHost: x\r\n\r\n';
+    const res = await rawRequest(gateway.url, '/alpha/visible', {
+      headers: { 'transfer-encoding': 'chunked' },
+      body: smuggled,
+    });
+    assert.equal(res.status, 200);
+    assert.equal(JSON.parse(res.body).body, smuggled, 'the payload arrives as this request\'s body');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const seen = mocks.alpha.requests.slice(before).map((r) => r.url);
+    assert.deepEqual(seen, ['/alpha/visible'], 'the upstream saw exactly one request');
   });
 
   it('an unreachable upstream returns 502 JSON', async () => {

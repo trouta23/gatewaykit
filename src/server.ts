@@ -69,6 +69,9 @@ export function createGateway(config: GatewayConfig, options: GatewayOptions = {
     // resolves dot segments, so "/public/../internal" can't dodge route policies.
     if (!req.url?.startsWith('/')) return sendJson(res, 400, { error: 'bad_request', message: 'invalid request target' });
     const url = new URL(`http://gateway${req.url}`);
+    // The query is forwarded byte-for-byte; URL.search would re-encode it.
+    const queryStart = req.url.indexOf('?');
+    const rawQuery = queryStart === -1 ? '' : req.url.slice(queryStart);
 
     if (url.pathname === '/health') {
       if (method !== 'GET') return sendJson(res, 405, { error: 'method_not_allowed' }, { allow: 'GET' });
@@ -92,7 +95,7 @@ export function createGateway(config: GatewayConfig, options: GatewayOptions = {
     const gatewayReq: GatewayRequest = {
       id, method, clientIp, receivedAt, route, upstreamPath,
       path: url.pathname,
-      query: url.search,
+      query: rawQuery,
       headers: req.headers,
       body: req,
       deadline: receivedAt.getTime() + route.timeoutMs,

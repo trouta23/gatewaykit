@@ -43,6 +43,8 @@ function send(target: URL, req: GatewayRequest, timeoutMs: number): Promise<Gate
       req.signal.removeEventListener('abort', onClientAbort);
     };
 
+    const headers = upstreamHeaders(req, target);
+    const body = frameBody(req, headers);
     const transport = target.protocol === 'https:' ? https : http;
     const upstreamReq = transport.request({
       protocol: target.protocol,
@@ -51,7 +53,7 @@ function send(target: URL, req: GatewayRequest, timeoutMs: number): Promise<Gate
       method: req.method,
       // Raw path bytes are forwarded as-is; only the configured base path is prepended.
       path: joinPath(target, req.upstreamPath) + joinQuery(target, req.query),
-      headers: upstreamHeaders(req, target),
+      headers,
       agent: agents[target.protocol as keyof typeof agents],
       signal: controller.signal,
     });
@@ -69,8 +71,31 @@ function send(target: URL, req: GatewayRequest, timeoutMs: number): Promise<Gate
       else reject(new GatewayError(502, 'bad_gateway', { message: 'upstream unavailable', cause: error }));
     });
 
-    writeBody(req.body, upstreamReq);
+    writeBody(body, upstreamReq);
   });
+}
+
+/**
+ * Decides the upstream body and declares its framing explicitly. Transfer-Encoding
+ * is hop-by-hop and gets stripped, and Node only re-chunks by default for methods
+ * that usually carry a body; without this, a chunked GET would be forwarded as raw
+ * unframed bytes the upstream parses as a second, smuggled request.
+ */
+function frameBody(req: GatewayRequest, headers: http.OutgoingHttpHeaders): Body {
+  const { body } = req;
+  if (body === undefined || Buffer.isBuffer(body)) {
+    delete headers['transfer-encoding'];
+    if (body === undefined) delete headers['content-length'];
+    else headers['content-length'] = body.length;
+    return body;
+  }
+  if (req.headers['content-length'] !== undefined) return body;
+  if (req.headers['transfer-encoding'] !== undefined) {
+    headers['transfer-encoding'] = 'chunked';
+    return body;
+  }
+  // Neither header: by HTTP/1.1 framing rules the client sent no body.
+  return undefined;
 }
 
 function writeBody(body: Body, upstreamReq: http.ClientRequest): void {

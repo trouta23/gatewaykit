@@ -33,7 +33,13 @@ export function startMockUpstream(name: string, port = 0): Promise<MockUpstream>
 
   const server = http.createServer(async (req, res) => {
     const chunks: Buffer[] = [];
-    for await (const chunk of req) chunks.push(chunk as Buffer);
+    try {
+      for await (const chunk of req) chunks.push(chunk as Buffer);
+    } catch {
+      // Client aborted mid-upload: drop this request, keep the server alive.
+      res.destroy();
+      return;
+    }
     const body = Buffer.concat(chunks).toString('utf8');
     const url = new URL(`http://mock${req.url ?? '/'}`);
     const send = (status: number, payload: unknown) => {
