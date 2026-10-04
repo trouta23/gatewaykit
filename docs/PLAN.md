@@ -57,19 +57,19 @@ Routes are compiled once at startup. Each one becomes a single composed `Handler
 
 Each issue gets one branch and one PR. Every PR gets a Codex review before it's merged with a merge commit.
 
-| # | Tier | Issue | Est | Lane |
-|---|---|---|---|---|
-| 1 | 1 | Core gateway: strict config, router, /health, 404/405, streaming proxy, strip_prefix, deadline → 502/504, mock upstream, `npm test` (typecheck + tests) | 35m | serial |
-| 2 | 1 | Transport hardening: client abort → upstream abort, mid-body failures, hop-by-hop both ways, X-Forwarded-*, Set-Cookie, graceful shutdown | 20m | A |
-| 3 | 1 | API-key auth (fail closed, constant-time compare) | 10m | B |
-| 4 | 1 | Rate limiting: fixed + sliding, ip/global, inheritance, 50-concurrent test, idle-bucket sweep | 25m | C |
-| 5 | 1 | Load balancing: round robin + smooth weighted round robin | 15m | B |
-| 6 | 2 | Retry with fixed/exponential backoff (idempotent only, shared deadline) | 15m | A |
-| 7 | 2 | Circuit breaker (closed/open/half-open, 503 body) | 15m | B |
-| 8 | 3 | Header transforms (request + response, `$request_time`) | 10m | C |
-| 9 | 3 | Active health checks feeding the balancer | 15m | C |
-| 10 | 3 | Body transforms (mapping + envelope) | 20m | — |
-| 11 | 1 | README, DECISIONS.md, acceptance test against an unrelated config | 20m | serial, last |
+| # | Tier | Issue | Lane |
+|---|---|---|---|
+| 1 | 1 | Core gateway: strict config, router, /health, 404/405, streaming proxy, strip_prefix, deadline → 502/504, mock upstream, `npm test` (typecheck + tests) | serial |
+| 2 | 1 | Transport hardening: client abort → upstream abort, mid-body failures, hop-by-hop both ways, X-Forwarded-*, Set-Cookie, graceful shutdown | A |
+| 3 | 1 | API-key auth (fail closed, constant-time compare) | B |
+| 4 | 1 | Rate limiting: fixed + sliding, ip/global, inheritance, 50-concurrent test, idle-bucket sweep | C |
+| 5 | 1 | Load balancing: round robin + smooth weighted round robin | B |
+| 6 | 2 | Retry with fixed/exponential backoff (idempotent only, shared deadline) | A |
+| 7 | 2 | Circuit breaker (closed/open/half-open, 503 body) | B |
+| 8 | 3 | Header transforms (request + response, `$request_time`) | C |
+| 9 | 3 | Active health checks feeding the balancer | C |
+| 10 | 3 | Body transforms (mapping + envelope) | — |
+| 11 | 1 | README, DECISIONS.md, acceptance test against an unrelated config | serial, last |
 
 **File ownership for parallel lanes** (added after Codex's review). Contracts are frozen when #1 merges: `src/pipeline.ts` and all of `src/config/` (every feature block is validated in #1), so lanes never touch them.
 
