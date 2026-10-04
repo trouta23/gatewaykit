@@ -8,7 +8,7 @@ import { compose, GatewayError } from './pipeline.ts';
 import { plugins as defaultPlugins } from './plugins/index.ts';
 import { createForwarder } from './proxy/forward.ts';
 import { Router } from './router.ts';
-import { createBalancer } from './upstream/balancer.ts';
+import { createBalancer, UPSTREAM_FEATURES } from './upstream/balancer.ts';
 
 export type Logger = (entry: Record<string, unknown>) => void;
 
@@ -132,7 +132,7 @@ export function createGateway(config: GatewayConfig, options: GatewayOptions = {
 }
 
 function buildRouteHandler(route: RouteConfig, plugins: readonly Plugin[], ctx: BuildContext, log: Logger): Handler {
-  const supported = new Set<FeatureName>(plugins.map((p) => p.feature));
+  const supported = new Set<FeatureName>([...plugins.map((p) => p.feature), ...UPSTREAM_FEATURES]);
   const middleware: Middleware[] = [];
 
   for (const feature of Object.keys(route.features) as FeatureName[]) {
@@ -145,7 +145,7 @@ function buildRouteHandler(route: RouteConfig, plugins: readonly Plugin[], ctx: 
     const wrap = plugin.build(route, ctx);
     if (wrap) middleware.push(wrap);
   }
-  return compose(middleware, createForwarder(createBalancer(route.upstream), ctx.now));
+  return compose(middleware, createForwarder(createBalancer(route, ctx), ctx.now));
 }
 
 const failClosed: Middleware = () => async () => {
