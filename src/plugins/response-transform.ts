@@ -1,5 +1,5 @@
 import type { Plugin } from '../pipeline.ts';
-import { withoutFramingHeaders, resolveTemplate, transformHeaders } from './template.ts';
+import { resolveTemplate, transformHeaders, withoutGatewayOwnedHeaders } from './template.ts';
 
 /**
  * Rewrites the headers of the upstream response. Errors the gateway generates
@@ -15,7 +15,7 @@ export const responseTransformPlugin: Plugin = {
     // core no longer warns about it; say so here instead of silently ignoring it.
     if (config.body) process.emitWarning(`route ${route.path}: response_transform.body is not supported yet and is ignored`);
     if (!config.headers) return undefined;
-    const headers = withoutFramingHeaders(config.headers, `route ${route.path}: response_transform.headers`);
+    const headers = withoutGatewayOwnedHeaders(config.headers, `route ${route.path}: response_transform.headers`);
 
     return (next) => async (req) => {
       const response = await next(req);

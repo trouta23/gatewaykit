@@ -7,8 +7,8 @@ import type { BuildContext, GatewayRequest, GatewayResponse, Handler } from '../
 import { GatewayError } from '../src/pipeline.ts';
 import { requestTransformPlugin } from '../src/plugins/request-transform.ts';
 import { responseTransformPlugin } from '../src/plugins/response-transform.ts';
-import { resolveTemplate } from '../src/plugins/template.ts';
-import { DEAD_UPSTREAM, startGateway, startMocks } from './helpers.ts';
+import { resolveTemplate, transformHeaders } from '../src/plugins/template.ts';
+import { DEAD_UPSTREAM, rawRequest, startGateway, startMocks } from './helpers.ts';
 
 const RECEIVED_AT = Date.UTC(2026, 0, 2, 3, 4, 5, 678);
 const NOW = RECEIVED_AT + 250;
@@ -177,8 +177,8 @@ describe('framing headers', () => {
     assert.deepEqual(
       warn.mock.calls.map((call) => call.arguments[0]),
       [
-        'route /edge: request_transform.headers: "Transfer-Encoding" is controlled by the gateway (message framing); ignored',
-        'route /edge: request_transform.headers: "Content-Length" is controlled by the gateway (message framing); ignored',
+        'route /edge: request_transform.headers: "Transfer-Encoding" is managed by the gateway (framing or connection handling); ignored',
+        'route /edge: request_transform.headers: "Content-Length" is managed by the gateway (framing or connection handling); ignored',
       ],
     );
   });
@@ -190,6 +190,72 @@ describe('framing headers', () => {
     const res = await responseTransformPlugin.build(route, ctx)!(upstream)(requestFor(route));
     assert.deepEqual(res.headers, { 'content-length': '2' });
     assert.equal(warn.mock.callCount(), 1);
+  });
+});
+
+describe('gateway-owned headers', () => {
+  it('a response transform cannot add Trailer or hop-by-hop headers: ignored with a startup warning', async (t) => {
+    const warn = t.mock.method(process, 'emitWarning', () => {});
+    const route = routeWith({
+      response_transform: {
+        headers: {
+          add: { Trailer: 'x-checksum', TE: 'trailers', Upgrade: 'h2c', Connection: 'close', 'Keep-Alive': 'timeout=5', 'X-Ok': 'yes' },
+        },
+      },
+    });
+    const upstream: Handler = async () => ({ status: 200, headers: { 'content-length': '2' }, body: Buffer.from('{}') });
+    const res = await responseTransformPlugin.build(route, ctx)!(upstream)(requestFor(route));
+    assert.deepEqual(res.headers, { 'content-length': '2', 'x-ok': 'yes' });
+    assert.equal(warn.mock.callCount(), 5);
+  });
+
+  it('remove: [Connection] has no effect and warns', (t) => {
+    const warn = t.mock.method(process, 'emitWarning', () => {});
+    requestTransformPlugin.build(routeWith({ request_transform: { headers: { remove: ['Connection'] } } }), ctx);
+    assert.equal(warn.mock.callCount(), 1);
+  });
+});
+
+describe('transformHeaders', () => {
+  it('stores a "__proto__" header as an own property instead of invoking the prototype setter', () => {
+    const headers = JSON.parse('{"__proto__": "from-client", "x-a": "1"}') as Record<string, string>;
+    const add = JSON.parse('{"__proto__": "added"}') as Record<string, string>;
+    const result = transformHeaders(headers, { add, remove: [] }, (value) => value);
+    assert.equal(Object.getPrototypeOf(result), Object.prototype);
+    assert.deepEqual(Object.entries(result), [['x-a', '1'], ['__proto__', 'added']]);
+  });
+});
+
+describe('client Connection nominations through the gateway', () => {
+  it('cannot strip a header the gateway adds, and remove: [Connection] cannot leak nominated headers', async (t) => {
+    t.mock.method(process, 'emitWarning', () => {});
+    const mocks = await startMocks('echo');
+    const gateway = await startGateway({
+      routes: [
+        {
+          path: '/trusted', methods: ['GET'], upstream: { url: mocks.echo.url },
+          request_transform: { headers: { add: { 'X-Trusted': 'gateway' } } },
+        },
+        {
+          path: '/unconnected', methods: ['GET'], upstream: { url: mocks.echo.url },
+          request_transform: { headers: { remove: ['Connection'] } },
+        },
+      ],
+    });
+    try {
+      const trusted = await rawRequest(gateway.url, '/trusted', { headers: { Connection: 'x-trusted', 'X-Trusted': 'spoofed' } });
+      assert.equal(JSON.parse(trusted.body).headers['x-trusted'], 'gateway');
+
+      const unconnected = await rawRequest(gateway.url, '/unconnected', {
+        headers: { Connection: 'x-hop-secret', 'X-Hop-Secret': 'for-the-gateway-only', 'X-Keep': 'yes' },
+      });
+      const seen = JSON.parse(unconnected.body).headers;
+      assert.equal(seen['x-hop-secret'], undefined, 'a header the client nominated as hop-by-hop never reaches the upstream');
+      assert.equal(seen['x-keep'], 'yes');
+    } finally {
+      await gateway.close();
+      await mocks.closeAll();
+    }
   });
 });
 
