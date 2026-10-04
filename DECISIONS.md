@@ -63,6 +63,8 @@ The rejected alternative was Express-style `(req, res, next)`. Once a middleware
 
 ## 5. How I used AI tools
 
+The full picture, including the agent setup this ran inside, the five-layer review stack and the verbatim prompts, is in [docs/ai-workflow.md](docs/ai-workflow.md).
+
 - **Two independent plans, then reconciliation.** Claude and Codex (gpt-6-astra) each wrote an architecture and backlog without seeing the other's ([`docs/planning/`](docs/planning/)). Claude reconciled them in [`docs/PLAN.md`](docs/PLAN.md). Codex accepted all seven of Claude's resolutions and added three blockers that were folded in: who owns the response body, file ownership per parallel lane, and a stricter cut line.
 - **Codex as the reviewer on every PR.** It reviews code it didn't write, with standing rules in [`AGENTS.md`](AGENTS.md), and gets an adversarial re-review after fixes. Real defects it caught:
   - **Request smuggling in the core (P1).** Stripping the hop-by-hop `Transfer-Encoding` header left a chunked GET body unframed, so the upstream parsed it as a second request that skipped auth. The adversarial re-review then found a second way in (`Connection: content-length`). Both are fixed, each with a regression test confirmed to fail without its fix.
