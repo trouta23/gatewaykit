@@ -31,7 +31,12 @@ export const retryPlugin: Plugin = {
       if (!IDEMPOTENT_METHODS.has(req.method)) return next(req);
 
       // A stream can be read only once, so every attempt gets the same immutable Buffer.
-      const replayable: GatewayRequest = { ...req, body: await readReplayableBody(req, req.deadline - ctx.now()) };
+      const body = await readReplayableBody(req, req.deadline - ctx.now());
+      // An upload can finish right at the deadline, before the timer fires. That time
+      // still went to the client, so it's the same 408 rather than the forwarder's 504,
+      // which the circuit breaker would count as an upstream failure.
+      if (Buffer.isBuffer(body) && !Buffer.isBuffer(req.body) && ctx.now() >= req.deadline) throw requestTimeout(req);
+      const replayable: GatewayRequest = { ...req, body };
 
       for (let attempt = 1; ; attempt += 1) {
         let outcome: Outcome;
@@ -98,13 +103,7 @@ function readReplayableBody(req: GatewayRequest, timeoutMs: number): Promise<Buf
       fail(req.signal.aborted ? new GatewayError(499, 'client_closed_request', { cause: error }) : error);
     };
     const onAbort = (): void => fail(new GatewayError(499, 'client_closed_request'));
-    // 408, not 504: the client failed to send its body in time (RFC 9110 §15.5.9) and
-    // the upstream was never called. A 5xx would count as an upstream failure in the
-    // circuit breaker, letting slow clients open it for everyone.
-    const timer = setTimeout(() => {
-      const message = `request body not received within ${req.route.timeoutMs}ms`;
-      fail(new GatewayError(408, 'request_timeout', { message, headers: CLOSE }));
-    }, Math.max(0, timeoutMs));
+    const timer = setTimeout(() => fail(requestTimeout(req)), Math.max(0, timeoutMs));
 
     function cleanup(): void {
       clearTimeout(timer);
@@ -124,6 +123,16 @@ function readReplayableBody(req: GatewayRequest, timeoutMs: number): Promise<Buf
     stream.once('error', onError);
     req.signal.addEventListener('abort', onAbort, { once: true });
   });
+}
+
+/**
+ * 408, not 504: the client failed to send its body in time (RFC 9110 §15.5.9) and
+ * the upstream was never called. A 5xx would count as an upstream failure in the
+ * circuit breaker, letting slow clients open it for everyone.
+ */
+function requestTimeout(req: GatewayRequest): GatewayError {
+  const message = `request body not received within ${req.route.timeoutMs}ms`;
+  return new GatewayError(408, 'request_timeout', { message, headers: CLOSE });
 }
 
 function declaresBody(headers: IncomingHttpHeaders): boolean {

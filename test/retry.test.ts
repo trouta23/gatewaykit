@@ -170,6 +170,20 @@ describe('retry plugin', () => {
     assert.equal(stalled.listenerCount('data'), 0);
   });
 
+  it('answers 408 when the upload completes at the deadline, without calling the upstream (Codex re-review on #24)', async () => {
+    const upstream = scripted(200);
+    let now = 1_000;
+    const body = new Readable({ read() {} });
+    const req = request({ method: 'PUT', headers: { 'content-length': '4' }, body, deadline: 1_050 });
+    const pending = buildRetry(DEFAULT_RETRY, () => now)(upstream.next)(req);
+    // The last byte arrives exactly at the deadline, before the timeout callback can run.
+    now = 1_050;
+    body.push('done');
+    body.push(null);
+    await assert.rejects(pending, { status: 408, code: 'request_timeout' });
+    assert.equal(upstream.seen.length, 0, 'the upstream is never called');
+  });
+
   it('does not start a retry whose backoff would end past the deadline', async () => {
     const upstream = scripted(503, 200);
     const handler = buildRetry({ ...DEFAULT_RETRY, initial_delay: '20ms' }, () => 1_000)(upstream.next);
