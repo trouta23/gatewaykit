@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { describe, it } from 'node:test';
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { RouteConfig } from '../src/config/types.ts';
@@ -30,9 +32,9 @@ function harness(route: RouteConfig) {
   const ctx: BuildContext = { now: () => 0, onClose: (cleanup) => cleanups.push(cleanup) };
   const down = new Set<string>();
   const probed: string[] = [];
-  const checker = startHealthChecks(route.upstream.targets, route.features.health_check!, ctx, async (url) => {
-    probed.push(url.href);
-    return !down.has(url.hostname.replace('.test', ''));
+  const checker = startHealthChecks(route.upstream.targets, route.features.health_check!, ctx, async (target, path) => {
+    probed.push(`${target.origin}${path}`);
+    return !down.has(target.hostname.replace('.test', ''));
   });
   const healthy = (name: string): boolean => checker.isHealthy(route.upstream.targets.find((t) => t.url.hostname === `${name}.test`)!);
   const select = createBalancer(route, ctx, checker);
@@ -112,6 +114,88 @@ describe('health checker', () => {
     h.close();
     t.mock.timers.tick(30_000);
     assert.equal(h.probed.length, 4, 'no probes after close');
+  });
+});
+
+/** A bare upstream that records each raw request target and answers with `status`, or never answers. */
+async function listen(port: number, status: number | 'hang' = 200) {
+  const seen: string[] = [];
+  const server = http.createServer((req, res) => {
+    seen.push(req.url ?? '');
+    if (status !== 'hang') res.writeHead(status).end('ok');
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(port, '127.0.0.1', () => resolve());
+  });
+  const close = (): Promise<void> =>
+    new Promise((resolve) => {
+      server.close(() => resolve());
+      server.closeAllConnections();
+    });
+  return { seen, port: (server.address() as AddressInfo).port, close };
+}
+
+/** fetch() refuses these ports before connecting (the WHATWG "bad ports" list). Binds the first free one. */
+async function listenOnPortFetchRefuses(): Promise<Awaited<ReturnType<typeof listen>>> {
+  for (const port of [6000, 6665, 6666, 6667, 6668, 6669, 6697, 10080]) {
+    try {
+      return await listen(port);
+    } catch {
+      // In use: try the next one.
+    }
+  }
+  throw new Error('no fetch-refused port is free');
+}
+
+/** Runs one round of real HTTP probes against `url + path` and reports whether the target is healthy. */
+async function probeOnce(url: string, path: string, interval = '10s'): Promise<boolean> {
+  const route = validateConfig({
+    routes: [
+      { path: '/svc', methods: ['GET'], upstream: { url }, health_check: { path, interval, unhealthy_threshold: 1 } },
+    ],
+  }).routes[0]!;
+  const cleanups: Array<() => void> = [];
+  const ctx: BuildContext = { now: () => 0, onClose: (cleanup) => cleanups.push(cleanup) };
+  const checker = startHealthChecks(route.upstream.targets, route.features.health_check!, ctx);
+  try {
+    await checker.checkNow();
+    return checker.isHealthy(route.upstream.targets[0]!);
+  } finally {
+    cleanups.forEach((cleanup) => cleanup());
+  }
+}
+
+describe('HTTP probe', () => {
+  it('reaches targets on ports that fetch() refuses', async () => {
+    const upstream = await listenOnPortFetchRefuses();
+    try {
+      assert.equal(await probeOnce(`http://127.0.0.1:${upstream.port}`, '/healthz'), true);
+      assert.deepEqual(upstream.seen, ['/healthz']);
+    } finally {
+      await upstream.close();
+    }
+  });
+
+  it('sends base path + health path raw, query string included', async () => {
+    const upstream = await listen(0);
+    try {
+      assert.equal(await probeOnce(`http://127.0.0.1:${upstream.port}/base/`, '/healthz?ready=1'), true);
+      assert.deepEqual(upstream.seen, ['/base/healthz?ready=1']);
+    } finally {
+      await upstream.close();
+    }
+  });
+
+  it('treats non-2xx answers and timeouts as failures', async () => {
+    const failing = await Promise.all([listen(0, 503), listen(0, 302), listen(0, 'hang')]);
+    try {
+      for (const upstream of failing) {
+        assert.equal(await probeOnce(`http://127.0.0.1:${upstream.port}`, '/healthz', '50ms'), false);
+      }
+    } finally {
+      await Promise.all(failing.map((upstream) => upstream.close()));
+    }
   });
 });
 
