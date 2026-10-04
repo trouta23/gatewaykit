@@ -1,5 +1,6 @@
 import type { Plugin } from '../pipeline.ts';
 import { authPlugin } from './auth.ts';
+import { circuitBreakerPlugin } from './circuit-breaker.ts';
 import { rateLimitPlugin } from './rate-limit.ts';
 
 /**
@@ -18,7 +19,7 @@ export const plugins: readonly Plugin[] = [
 
   // request_transform (#8, #10): once per logical request
 
-  // circuit_breaker (#7): outside retry, one count per logical request
+  circuitBreakerPlugin, // circuit_breaker (#7): outside retry, one count per logical request
 
   // retry (#6): innermost, re-invokes the forwarder
 ];
