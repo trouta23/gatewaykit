@@ -44,7 +44,16 @@ describe('path aliases cannot skip a route policy', () => {
     });
   }
 
-  for (const ambiguous of ['/x/..%2fsecret', '/x/..%2Fsecret', '/x/..%5csecret', '/secret%00']) {
+  // Each can make an upstream see a different path than the router matched: an
+  // encoded separator, a path parameter (Java servers read "..;" as ".."),
+  // an encoded query or fragment delimiter, double encoding, a non-standard
+  // escape, or bytes that aren't valid UTF-8 (overlong encodings of "/").
+  const ambiguousPaths = [
+    '/x/..%2fsecret', '/x/..%2Fsecret', '/x/..%5csecret', '/secret%00',
+    '/secret;x', '/x/..;/secret', '/x/%3Bsecret', '/x%3Fy', '/x%23y',
+    '/%2573ecret', '/%u0073ecret', '/bad%zz', '/bad%', '/%c0%afsecret',
+  ];
+  for (const ambiguous of ambiguousPaths) {
     it(`rejects the ambiguous encoding in "${ambiguous}" with 400`, async () => {
       assert.deepEqual(await reachesUpstream(ambiguous), { status: 400, reached: false });
     });
@@ -54,6 +63,12 @@ describe('path aliases cannot skip a route policy', () => {
     const res = await rawRequest(gateway.url, '//public/%7Euser/doc?q=%2F');
     assert.equal(res.status, 200);
     assert.equal(JSON.parse(res.body).url, '/public/~user/doc?q=%2F', 'path canonicalized; query untouched');
+  });
+
+  it('forwards valid UTF-8 escapes as escapes', async () => {
+    const res = await rawRequest(gateway.url, '/caf%c3%a9');
+    assert.equal(res.status, 200);
+    assert.equal(JSON.parse(res.body).url, '/caf%C3%A9');
   });
 
   it('leaves reserved escapes such as %20 encoded', async () => {
@@ -69,7 +84,7 @@ describe('path aliases cannot skip a route policy', () => {
 });
 
 describe('route paths in config must be canonical', () => {
-  for (const path of ['/a%20b', '/a//b', '/%73ecret']) {
+  for (const path of ['/a%2fb', '/a//b', '/%73ecret', '/café', '/./secret', '/a;b']) {
     it(`rejects "${path}" at startup`, () => {
       assert.throws(
         () => validateConfig({ routes: [{ path, methods: ['GET'], upstream: { url: 'http://x' } }] }),
@@ -77,4 +92,8 @@ describe('route paths in config must be canonical', () => {
       );
     });
   }
+  it('accepts a canonical path that keeps a reserved escape', () => {
+    const [route] = validateConfig({ routes: [{ path: '/a%20b', methods: ['GET'], upstream: { url: 'http://x' } }] }).routes;
+    assert.equal(route!.path, '/a%20b');
+  });
 });
