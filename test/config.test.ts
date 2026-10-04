@@ -117,6 +117,11 @@ describe('config hardening (Codex review on PR #13)', () => {
     assert.ok(problems.some((p) => p.startsWith('routes[0].auth.header:')));
   });
 
+  it('rejects an auth header the gateway rewrites, so a key cannot leak upstream (Codex review on #17)', () => {
+    const problems = problemsOf(routeWith({ auth: { type: 'api_key', header: 'X-Request-Id', keys: ['k'] } }));
+    assert.deepEqual(problems, ['routes[0].auth.header: "X-Request-Id" is managed by the gateway and cannot carry credentials']);
+  });
+
   it('rejects unsafe or conflicting mapping paths', () => {
     const mapping = { user: 'name', 'user.id': 'userId', '__proto__.polluted': 'x', 'meta.ok': 'constructor.prototype' };
     const problems = problemsOf(routeWith({ request_transform: { body: { mapping } } }));

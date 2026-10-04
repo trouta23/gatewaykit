@@ -30,6 +30,14 @@ const DEFAULT_PORT = 8080;
 const DEFAULT_TIMEOUT_MS = 30_000;
 const HTTP_METHODS = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']);
 const TEMPLATE_VARIABLES = new Set(['$request_time', '$response_time', '$body', '$route_path']);
+/**
+ * Headers the gateway itself rewrites on every forwarded request. A credential
+ * carried in one of these would be copied upstream (e.g. into X-Request-Id).
+ */
+const GATEWAY_MANAGED_HEADERS = new Set([
+  'host', 'connection', 'content-length', 'transfer-encoding',
+  'x-request-id', 'x-forwarded-for', 'x-forwarded-proto', 'x-forwarded-host',
+]);
 /** Path segments that would reach Object.prototype when a mapping writes them. */
 const UNSAFE_SEGMENTS = new Set(['__proto__', 'prototype', 'constructor']);
 
@@ -407,7 +415,10 @@ function readAuth(r: Reader, value: unknown, path: string): AuthConfig | undefin
   const raw = r.object(value, path, ['type', 'header', 'keys']);
   if (!raw) return undefined;
   const type = r.oneOf(raw.type, `${path}.type`, ['api_key'] as const);
-  const header = r.headerName(raw.header, `${path}.header`);
+  let header = r.headerName(raw.header, `${path}.header`);
+  if (header && GATEWAY_MANAGED_HEADERS.has(header.toLowerCase())) {
+    header = r.fail(`${path}.header`, `"${header}" is managed by the gateway and cannot carry credentials`);
+  }
   const keys = r.stringList(raw.keys, `${path}.keys`, { nonEmpty: true });
   return type && header && keys ? { type, header: header.toLowerCase(), keys } : undefined;
 }
