@@ -13,8 +13,9 @@ const agents = {
 
 /**
  * The innermost Handler: sends one attempt to the selected upstream target.
- * Resolves on upstream headers; the deadline stays armed until the response
- * body finishes, so a stalled body cannot outlive the route timeout.
+ * Resolves on upstream headers; the deadline stays armed until both the upload
+ * and the response body finish, so neither a stalled body nor a stalled upload
+ * can outlive the route timeout.
  */
 export function createForwarder(selectTarget: TargetSelector, now: () => number = Date.now): Handler {
   return async (req) => {
@@ -34,6 +35,11 @@ function send(target: URL, req: GatewayRequest, timeoutMs: number): Promise<Gate
     }, timeoutMs);
     const onClientAbort = () => controller.abort();
     req.signal.addEventListener('abort', onClientAbort, { once: true });
+    // Once the gateway has answered, Node's server stops tracking the request: a
+    // client that drops mid-upload neither aborts req.signal nor errors the body
+    // stream. Its socket closing is the only signal left.
+    const clientSocket = req.body instanceof http.IncomingMessage ? req.body.socket : undefined;
+    clientSocket?.once('close', onClientAbort);
 
     let released = false;
     const release = () => {
@@ -41,6 +47,8 @@ function send(target: URL, req: GatewayRequest, timeoutMs: number): Promise<Gate
       released = true;
       clearTimeout(timer);
       req.signal.removeEventListener('abort', onClientAbort);
+      // Keep-alive sockets carry many requests; don't pile listeners onto them.
+      clientSocket?.removeListener('close', onClientAbort);
     };
 
     const headers = upstreamHeaders(req, target);
@@ -58,8 +66,27 @@ function send(target: URL, req: GatewayRequest, timeoutMs: number): Promise<Gate
       signal: controller.signal,
     });
 
+    // An upstream may answer before it has read the whole upload, so the response
+    // ending alone must not disarm the deadline or the client-abort hooks: the
+    // upload pipe would then outlive both the route timeout and a client disconnect.
+    let uploadDone = false;
+    let responseDone = false;
+    const settle = () => {
+      if (uploadDone && responseDone) release();
+    };
+    const onUploadDone = () => {
+      uploadDone = true;
+      settle();
+    };
+    upstreamReq.once('finish', onUploadDone);
+    // Destroyed before finishing (upstream reset, abort): nothing is left to upload.
+    upstreamReq.once('close', onUploadDone);
+
     upstreamReq.on('response', (res) => {
-      res.once('close', release);
+      res.once('close', () => {
+        responseDone = true;
+        settle();
+      });
       resolve({ status: res.statusCode ?? 502, headers: withoutHopByHop(res.headers), body: res });
     });
 
