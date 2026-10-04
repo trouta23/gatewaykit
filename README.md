@@ -97,7 +97,7 @@ A feature can reject a request (auth, rate limit, an open breaker), call `next` 
 | `request_transform.headers`, `response_transform.headers` | ✅ | `add` / `remove`, `$request_time`, `$response_time`, `$route_path`, `$literal:`; connection and framing headers are protected. Response transforms apply to upstream responses only, not to gateway-generated errors (401, 429, 502, …) |
 | `request_transform.body.mapping`, `response_transform.body.envelope` | ❌ | Validated at startup, but not applied (startup warning) |
 
-Body transforms are the only config keys without an implementation. They log a startup warning and are skipped. A security feature is never skipped that way: an unimplemented `auth` would **fail closed** (503) instead.
+Body transforms are the only config keys without an implementation. They log a startup warning and are skipped. `auth` is never skipped that way: an unimplemented `auth` would **fail closed** (503) instead.
 
 ## Testing
 
