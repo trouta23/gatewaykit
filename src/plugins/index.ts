@@ -2,6 +2,8 @@ import type { Plugin } from '../pipeline.ts';
 import { authPlugin } from './auth.ts';
 import { circuitBreakerPlugin } from './circuit-breaker.ts';
 import { rateLimitPlugin } from './rate-limit.ts';
+import { requestTransformPlugin } from './request-transform.ts';
+import { responseTransformPlugin } from './response-transform.ts';
 
 /**
  * Every config feature, in request-pipeline order: the first entry is the
@@ -15,9 +17,9 @@ export const plugins: readonly Plugin[] = [
 
   rateLimitPlugin, // rate_limit (#4)
 
-  // response_transform (#8, #10): outside retry, so it maps the final response
+  responseTransformPlugin, // response_transform (#8, #10): outside retry, so it maps the final response
 
-  // request_transform (#8, #10): once per logical request
+  requestTransformPlugin, // request_transform (#8, #10): once per logical request
 
   circuitBreakerPlugin, // circuit_breaker (#7): outside retry, one count per logical request
 

@@ -148,9 +148,11 @@ function upstreamHeaders(req: GatewayRequest, target: URL): http.OutgoingHttpHea
   const headers = withoutHopByHop(req.headers);
   headers.host = target.host;
   // Derived from the socket, not appended to client-supplied values: this gateway is
-  // the edge, so any incoming X-Forwarded-* header is untrusted.
+  // the edge, so any incoming X-Forwarded-* header is untrusted. X-Forwarded-Host is
+  // deleted even when there is no Host to replace it with, so a forged one can't survive.
   headers['x-forwarded-for'] = req.clientIp;
   headers['x-forwarded-proto'] = 'http';
+  delete headers['x-forwarded-host'];
   if (req.headers.host) headers['x-forwarded-host'] = req.headers.host;
   headers['x-request-id'] = req.id;
   return headers;
