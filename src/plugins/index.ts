@@ -1,4 +1,5 @@
 import type { Plugin } from '../pipeline.ts';
+import { authPlugin } from './auth.ts';
 import { rateLimitPlugin } from './rate-limit.ts';
 
 /**
@@ -9,7 +10,7 @@ import { rateLimitPlugin } from './rate-limit.ts';
  * Plugin in this directory, and register it in its slot below.
  */
 export const plugins: readonly Plugin[] = [
-  // auth (#3): reject before any work is done or quota is spent
+  authPlugin, // auth (#3): reject before any work is done or quota is spent
 
   rateLimitPlugin, // rate_limit (#4)
 
