@@ -1,4 +1,5 @@
 import type { Plugin } from '../pipeline.ts';
+import { rateLimitPlugin } from './rate-limit.ts';
 
 /**
  * Every config feature, in request-pipeline order: the first entry is the
@@ -10,7 +11,7 @@ import type { Plugin } from '../pipeline.ts';
 export const plugins: readonly Plugin[] = [
   // auth (#3): reject before any work is done or quota is spent
 
-  // rate_limit (#4)
+  rateLimitPlugin, // rate_limit (#4)
 
   // response_transform (#8, #10): outside retry, so it maps the final response
 
