@@ -4,6 +4,7 @@ import type { IncomingMessage, OutgoingHttpHeaders, ServerResponse } from 'node:
 import { pipeline } from 'node:stream/promises';
 import type { FeatureName, GatewayConfig, RouteConfig } from './config/types.ts';
 import type { BuildContext, GatewayRequest, GatewayResponse, Handler, Middleware, Plugin } from './pipeline.ts';
+import { canonicalPath } from './paths.ts';
 import { compose, GatewayError } from './pipeline.ts';
 import { plugins as defaultPlugins } from './plugins/index.ts';
 import { createForwarder } from './proxy/forward.ts';
@@ -69,17 +70,22 @@ export function createGateway(config: GatewayConfig, options: GatewayOptions = {
     // resolves dot segments, so "/public/../internal" can't dodge route policies.
     if (!req.url?.startsWith('/')) return sendJson(res, 400, { error: 'bad_request', message: 'invalid request target' });
     const url = new URL(`http://gateway${req.url}`);
+    // Route, apply policies to and forward one canonical path (see paths.ts).
+    const pathname = canonicalPath(url.pathname);
+    if (pathname === undefined) {
+      return sendJson(res, 400, { error: 'bad_request', message: 'ambiguous encoding in request path' });
+    }
     // The query is forwarded byte-for-byte; URL.search would re-encode it.
     const queryStart = req.url.indexOf('?');
     const rawQuery = queryStart === -1 ? '' : req.url.slice(queryStart);
 
-    if (url.pathname === '/health') {
+    if (pathname === '/health') {
       if (method !== 'GET') return sendJson(res, 405, { error: 'method_not_allowed' }, { allow: 'GET' });
       return sendJson(res, 200, { status: 'healthy', uptime_seconds: Math.floor((performance.now() - readyAt) / 1000) });
     }
 
-    const match = router.match(url.pathname);
-    if (!match) return sendJson(res, 404, { error: 'not_found', message: `no route for ${url.pathname}` });
+    const match = router.match(pathname);
+    if (!match) return sendJson(res, 404, { error: 'not_found', message: `no route for ${pathname}` });
     const { route, upstreamPath } = match;
     routePath = route.path;
     if (!route.methods.includes(method)) {
@@ -94,7 +100,7 @@ export function createGateway(config: GatewayConfig, options: GatewayOptions = {
     const receivedAt = new Date(now());
     const gatewayReq: GatewayRequest = {
       id, method, clientIp, receivedAt, route, upstreamPath,
-      path: url.pathname,
+      path: pathname,
       query: rawQuery,
       headers: req.headers,
       body: req,

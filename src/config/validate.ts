@@ -1,4 +1,5 @@
 import { validateHeaderName, validateHeaderValue } from 'node:http';
+import { canonicalPath } from '../paths.ts';
 import { parseDuration } from './duration.ts';
 import type {
   AuthConfig,
@@ -233,7 +234,13 @@ function readRoutePath(r: Reader, value: unknown, path: string): string | undefi
   if (str === undefined) return undefined;
   if (!str.startsWith('/')) return r.fail(path, 'must start with "/"');
   if (/[?#\s]/.test(str)) return r.fail(path, 'must be a plain path without query, fragment or whitespace');
-  return str.length > 1 ? str.replace(/\/+$/, '') || '/' : str;
+  const route = str.length > 1 ? str.replace(/\/+$/, '') || '/' : str;
+  // Requests are matched in canonical form, so a non-canonical route could never
+  // match: an auth route written "/caf\u00e9" or "/a//b" would silently protect nothing.
+  if (canonicalPath(new URL(`http://gateway${route}`).pathname) !== route) {
+    return r.fail(path, 'must be a canonical path (no percent-encoding, repeated slashes, dot segments, ";" or non-ASCII)');
+  }
+  return route;
 }
 
 function readUpstream(
