@@ -158,12 +158,12 @@ describe('retry plugin', () => {
     assert.equal(big.destroyed, false);
   });
 
-  it('answers 504 when the body stalls past the deadline, pausing the stream instead of destroying it', { timeout: 2_000 }, async () => {
+  it('answers 408 when the body stalls past the deadline, pausing the stream instead of destroying it', { timeout: 2_000 }, async () => {
     const upstream = scripted(200);
     const stalled = new Readable({ read() {} });
     stalled.push('partial');
     const req = request({ method: 'PUT', headers: { 'content-length': '100' }, body: stalled, deadline: Date.now() + 20 });
-    await assert.rejects(buildRetry()(upstream.next)(req), { status: 504, code: 'gateway_timeout' });
+    await assert.rejects(buildRetry()(upstream.next)(req), { status: 408, code: 'request_timeout' });
     assert.equal(upstream.seen.length, 0);
     assert.equal(stalled.destroyed, false);
     assert.equal(stalled.isPaused(), true);
@@ -213,6 +213,13 @@ describe('retry through the gateway', () => {
         { path: '/inventory', methods: ['GET'], upstream: { url: mocks.flakyGet.url }, retry },
         { path: '/profile', methods: ['PUT'], upstream: { url: mocks.flakyPut.url }, retry },
         { path: '/upload', methods: ['PUT'], upstream: { url: mocks.flakyPut.url, timeout: '100ms' }, retry },
+        {
+          path: '/guarded',
+          methods: ['GET', 'PUT'],
+          upstream: { url: mocks.flakyPut.url, timeout: '100ms' },
+          retry,
+          circuit_breaker: { threshold: 2, window: '10s', cooldown: '10s' },
+        },
         { path: '/checkout', methods: ['POST'], upstream: { url: mocks.flakyPost.url }, retry },
       ],
     });
@@ -222,6 +229,20 @@ describe('retry through the gateway', () => {
     await gateway.close();
     await mocks.closeAll();
   });
+
+  /** A PUT that declares 100 bytes, sends a few, then stalls until the gateway answers. */
+  function stalledUpload(path: string): Promise<http.IncomingMessage> {
+    const { hostname, port } = new URL(gateway.url);
+    return new Promise((resolve, reject) => {
+      const req = http.request({ hostname, port, path, method: 'PUT', headers: { 'content-length': '100' } });
+      req.on('response', (res) => {
+        res.resume();
+        resolve(res);
+      });
+      req.on('error', reject);
+      req.write('only part of the body');
+    });
+  }
 
   it('a GET that fails twice succeeds on the third attempt', async () => {
     const res = await fetch(`${gateway.url}/inventory/flaky?fail=2`);
@@ -242,20 +263,23 @@ describe('retry through the gateway', () => {
 
   // Regression: buffering for replay happens before the forwarder arms its deadline
   // timer, so a stalled upload used to hold the request open indefinitely.
-  it('a PUT whose body stalls gets a 504 at the route timeout and the connection is closed', { timeout: 2_000 }, async () => {
-    const { hostname, port } = new URL(gateway.url);
+  it('a PUT whose body stalls gets a 408 at the route timeout and the connection is closed', { timeout: 2_000 }, async () => {
     const started = Date.now();
-    const res = await new Promise<http.IncomingMessage>((resolve, reject) => {
-      const req = http.request({ hostname, port, path: '/upload/x', method: 'PUT', headers: { 'content-length': '100' } });
-      req.on('response', resolve);
-      req.on('error', reject);
-      req.write('only part of the body');
-    });
-    res.resume();
-    assert.equal(res.statusCode, 504);
+    const res = await stalledUpload('/upload/x');
+    assert.equal(res.statusCode, 408);
     assert.equal(res.headers.connection, 'close');
     assert.ok(Date.now() - started < 1_000);
     assert.equal(mocks.flakyPut.requests.filter((r) => r.url.startsWith('/upload')).length, 0);
+  });
+
+  // Regression: the stall used to answer 504, which the circuit breaker counts as an
+  // upstream failure, so slow clients could open the breaker for everyone.
+  it('stalled uploads do not open the circuit breaker', { timeout: 2_000 }, async () => {
+    assert.equal((await stalledUpload('/guarded/x')).statusCode, 408);
+    assert.equal((await stalledUpload('/guarded/x')).statusCode, 408);
+    const res = await fetch(`${gateway.url}/guarded/healthy`);
+    assert.equal(res.status, 200);
+    await res.body?.cancel();
   });
 
   it('a POST reaches the upstream exactly once', async () => {

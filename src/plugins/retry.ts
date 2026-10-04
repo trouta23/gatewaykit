@@ -98,9 +98,12 @@ function readReplayableBody(req: GatewayRequest, timeoutMs: number): Promise<Buf
       fail(req.signal.aborted ? new GatewayError(499, 'client_closed_request', { cause: error }) : error);
     };
     const onAbort = (): void => fail(new GatewayError(499, 'client_closed_request'));
+    // 408, not 504: the client failed to send its body in time (RFC 9110 §15.5.9) and
+    // the upstream was never called. A 5xx would count as an upstream failure in the
+    // circuit breaker, letting slow clients open it for everyone.
     const timer = setTimeout(() => {
       const message = `request body not received within ${req.route.timeoutMs}ms`;
-      fail(new GatewayError(504, 'gateway_timeout', { message, headers: CLOSE }));
+      fail(new GatewayError(408, 'request_timeout', { message, headers: CLOSE }));
     }, Math.max(0, timeoutMs));
 
     function cleanup(): void {
