@@ -10,6 +10,7 @@
   "scripts": {
     "start": "node src/main.ts",
     "mock": "node mock/upstream.ts",
+    "qa": "node scripts/qa/run.ts",
     "typecheck": "tsc --noEmit",
     "test": "npm run typecheck && node --test \"test/**/*.test.ts\""
   },
