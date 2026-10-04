@@ -1,5 +1,6 @@
 import { setTimeout as sleep } from 'node:timers/promises';
 import type { IncomingHttpHeaders } from 'node:http';
+import type { Readable } from 'node:stream';
 import type { RetryConfig } from '../config/types.ts';
 import { GatewayError } from '../pipeline.ts';
 import type { GatewayRequest, GatewayResponse, Plugin } from '../pipeline.ts';
@@ -11,6 +12,10 @@ const IDEMPOTENT_METHODS: ReadonlySet<string> = new Set(['GET', 'HEAD', 'OPTIONS
 
 /** Largest request body buffered for replay. Bigger uploads are rejected instead of held in memory. */
 export const MAX_REPLAY_BODY_BYTES = 10 * 1024 * 1024;
+
+// Sent when the gateway answers before reading the whole upload: Node then closes
+// the socket after the error instead of draining an upload that may never end.
+const CLOSE = { connection: 'close' } as const;
 
 type Outcome = { response: GatewayResponse } | { error: unknown };
 
@@ -26,7 +31,7 @@ export const retryPlugin: Plugin = {
       if (!IDEMPOTENT_METHODS.has(req.method)) return next(req);
 
       // A stream can be read only once, so every attempt gets the same immutable Buffer.
-      const replayable: GatewayRequest = { ...req, body: await readReplayableBody(req) };
+      const replayable: GatewayRequest = { ...req, body: await readReplayableBody(req, req.deadline - ctx.now()) };
 
       for (let attempt = 1; ; attempt += 1) {
         let outcome: Outcome;
@@ -59,28 +64,63 @@ export function backoffMs(config: RetryConfig, retry: number): number {
   return config.backoff === 'exponential' ? config.initialDelayMs * 2 ** (retry - 1) : config.initialDelayMs;
 }
 
-async function readReplayableBody(req: GatewayRequest): Promise<Buffer | undefined> {
+/**
+ * Reads a declared request body into one Buffer, bounded by the request deadline:
+ * the forwarder's timer is not armed yet, so a stalled upload would otherwise hold
+ * the connection forever. On failure the stream is paused, not destroyed:
+ * destroying it would reset the socket before the error response reaches the client.
+ */
+function readReplayableBody(req: GatewayRequest, timeoutMs: number): Promise<Buffer | undefined> {
   const { body } = req;
-  if (body === undefined || Buffer.isBuffer(body)) return body;
+  if (body === undefined || Buffer.isBuffer(body)) return Promise.resolve(body);
   // Same framing rule as the forwarder: without either header the client sent no body.
-  if (!declaresBody(req.headers)) return undefined;
+  if (!declaresBody(req.headers)) return Promise.resolve(undefined);
+  if (req.signal.aborted) return Promise.reject(new GatewayError(499, 'client_closed_request'));
+  const stream: Readable = body;
 
-  const chunks: Buffer[] = [];
-  let size = 0;
-  try {
-    for await (const chunk of body) {
-      size += (chunk as Buffer).length;
-      // Leaving the loop by throwing destroys the stream, so the rest of the upload is dropped.
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+
+    const onData = (chunk: Buffer): void => {
+      size += chunk.length;
       if (size > MAX_REPLAY_BODY_BYTES) {
-        throw new GatewayError(413, 'payload_too_large', { details: { max_bytes: MAX_REPLAY_BODY_BYTES } });
+        fail(new GatewayError(413, 'payload_too_large', { details: { max_bytes: MAX_REPLAY_BODY_BYTES }, headers: CLOSE }));
+      } else {
+        chunks.push(chunk);
       }
-      chunks.push(chunk as Buffer);
+    };
+    const onEnd = (): void => {
+      cleanup();
+      resolve(Buffer.concat(chunks));
+    };
+    const onError = (error: unknown): void => {
+      fail(req.signal.aborted ? new GatewayError(499, 'client_closed_request', { cause: error }) : error);
+    };
+    const onAbort = (): void => fail(new GatewayError(499, 'client_closed_request'));
+    const timer = setTimeout(() => {
+      const message = `request body not received within ${req.route.timeoutMs}ms`;
+      fail(new GatewayError(504, 'gateway_timeout', { message, headers: CLOSE }));
+    }, Math.max(0, timeoutMs));
+
+    function cleanup(): void {
+      clearTimeout(timer);
+      stream.off('data', onData);
+      stream.off('end', onEnd);
+      stream.off('error', onError);
+      req.signal.removeEventListener('abort', onAbort);
     }
-  } catch (error) {
-    if (req.signal.aborted) throw new GatewayError(499, 'client_closed_request', { cause: error });
-    throw error;
-  }
-  return Buffer.concat(chunks);
+    function fail(error: unknown): void {
+      cleanup();
+      stream.pause();
+      reject(error);
+    }
+
+    stream.on('data', onData);
+    stream.once('end', onEnd);
+    stream.once('error', onError);
+    req.signal.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 function declaresBody(headers: IncomingHttpHeaders): boolean {

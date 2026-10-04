@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import http from 'node:http';
 import { Readable } from 'node:stream';
 import { after, before, describe, it } from 'node:test';
 import { validateConfig } from '../src/config/validate.ts';
@@ -147,10 +148,26 @@ describe('retry plugin', () => {
 
   it('rejects a body too large to buffer with 413 before calling upstream', async () => {
     const upstream = scripted(200);
-    const big = Readable.from([Buffer.alloc(MAX_REPLAY_BODY_BYTES), Buffer.alloc(1)]);
+    // Still uploading: the gateway must answer without waiting for (or destroying) the rest.
+    const big = new Readable({ read() {} });
+    big.push(Buffer.alloc(MAX_REPLAY_BODY_BYTES));
+    big.push(Buffer.alloc(1));
     const req = request({ method: 'PUT', headers: { 'transfer-encoding': 'chunked' }, body: big });
     await assert.rejects(buildRetry()(upstream.next)(req), { status: 413, code: 'payload_too_large' });
     assert.equal(upstream.seen.length, 0);
+    assert.equal(big.destroyed, false);
+  });
+
+  it('answers 504 when the body stalls past the deadline, pausing the stream instead of destroying it', { timeout: 2_000 }, async () => {
+    const upstream = scripted(200);
+    const stalled = new Readable({ read() {} });
+    stalled.push('partial');
+    const req = request({ method: 'PUT', headers: { 'content-length': '100' }, body: stalled, deadline: Date.now() + 20 });
+    await assert.rejects(buildRetry()(upstream.next)(req), { status: 504, code: 'gateway_timeout' });
+    assert.equal(upstream.seen.length, 0);
+    assert.equal(stalled.destroyed, false);
+    assert.equal(stalled.isPaused(), true);
+    assert.equal(stalled.listenerCount('data'), 0);
   });
 
   it('does not start a retry whose backoff would end past the deadline', async () => {
@@ -195,6 +212,7 @@ describe('retry through the gateway', () => {
       routes: [
         { path: '/inventory', methods: ['GET'], upstream: { url: mocks.flakyGet.url }, retry },
         { path: '/profile', methods: ['PUT'], upstream: { url: mocks.flakyPut.url }, retry },
+        { path: '/upload', methods: ['PUT'], upstream: { url: mocks.flakyPut.url, timeout: '100ms' }, retry },
         { path: '/checkout', methods: ['POST'], upstream: { url: mocks.flakyPost.url }, retry },
       ],
     });
@@ -220,6 +238,24 @@ describe('retry through the gateway', () => {
       mocks.flakyPut.requests.map((r) => r.body),
       ['{"name":"ada"}', '{"name":"ada"}', '{"name":"ada"}'],
     );
+  });
+
+  // Regression: buffering for replay happens before the forwarder arms its deadline
+  // timer, so a stalled upload used to hold the request open indefinitely.
+  it('a PUT whose body stalls gets a 504 at the route timeout and the connection is closed', { timeout: 2_000 }, async () => {
+    const { hostname, port } = new URL(gateway.url);
+    const started = Date.now();
+    const res = await new Promise<http.IncomingMessage>((resolve, reject) => {
+      const req = http.request({ hostname, port, path: '/upload/x', method: 'PUT', headers: { 'content-length': '100' } });
+      req.on('response', resolve);
+      req.on('error', reject);
+      req.write('only part of the body');
+    });
+    res.resume();
+    assert.equal(res.statusCode, 504);
+    assert.equal(res.headers.connection, 'close');
+    assert.ok(Date.now() - started < 1_000);
+    assert.equal(mocks.flakyPut.requests.filter((r) => r.url.startsWith('/upload')).length, 0);
   });
 
   it('a POST reaches the upstream exactly once', async () => {
