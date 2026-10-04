@@ -81,9 +81,17 @@ export function startHealthChecks(
 /**
  * "target + path": the target's base path plus the configured health path,
  * kept raw like forwarded paths, so a query such as "?ready=1" isn't encoded.
+ * A query on the target URL itself is kept too, first, exactly as the
+ * forwarder joins it: a target that needs "?tenant=blue" to answer would
+ * otherwise be probed without it and wrongly marked unhealthy.
  */
 function probePath(target: URL, path: string): string {
-  return target.pathname.replace(/\/+$/, '') + path;
+  const queryStart = path.indexOf('?');
+  const healthPath = queryStart === -1 ? path : path.slice(0, queryStart);
+  const healthQuery = queryStart === -1 ? '' : path.slice(queryStart + 1);
+  const base = target.pathname.replace(/\/+$/, '') + healthPath;
+  const query = [target.search.slice(1), healthQuery].filter(Boolean).join('&');
+  return query ? `${base}?${query}` : base;
 }
 
 /**

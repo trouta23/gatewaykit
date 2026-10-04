@@ -225,6 +225,17 @@ describe('HTTP probe', () => {
     }
   });
 
+  it("keeps the target URL's own query, before the health path's, as forwarding does", async () => {
+    const upstream = await listen(0);
+    try {
+      assert.equal(await probeOnce(`http://127.0.0.1:${upstream.port}/private?tenant=blue`, '/healthz'), true);
+      assert.equal(await probeOnce(`http://127.0.0.1:${upstream.port}/private?tenant=blue`, '/healthz?ready=1'), true);
+      assert.deepEqual(upstream.seen, ['/private/healthz?tenant=blue', '/private/healthz?tenant=blue&ready=1']);
+    } finally {
+      await upstream.close();
+    }
+  });
+
   it('settles a 101 upgrade answer as a failure, and later probes still run', { timeout: 3_000 }, async () => {
     const upstream = await listenRaw();
     const checks = realChecker(`http://127.0.0.1:${upstream.port}`, '/healthz', '50ms');
