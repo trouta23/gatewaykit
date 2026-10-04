@@ -46,18 +46,6 @@ flowchart TD
     QA --> M[Merge, then CI on main]
 ```
 
-## What the human decided
-
-The agents proposed; these calls were mine, made in the moment:
-- Remove time estimates from issues; prioritize by impact and blockage ("phases").
-- Track every change as issue → branch → PR, with a PR template, later rewritten from evidence.
-- **PR size discipline.** The first core PR (~1,900 lines, five concerns) was closed and split into a three-PR stack.
-- **"Make sure our base is solid before we keep shotgunning."** Paused the feature lanes until the core was merged.
-- **A parallelism cap.** At most 1–3 work streams in flight, after fan-out outran review quality.
-- **A merge gate:** fresh-eyes review *and* the integrator's own manual QA on every PR, kept in one updated comment.
-- No decorative badges: earn one with real CI. Publish the QA scripts instead of keeping them local.
-- Move the cut line from 15:20 to 15:30. File honest follow-up issues for what's left.
-
 ## The review stack
 
 "Code review" here means five independent layers. A PR merged only when all of them passed.
@@ -70,31 +58,15 @@ The agents proposed; these calls were mine, made in the moment:
 | **4. Integrator QA** | The real `node src/main.ts` process against mock upstreams, with requests sent over raw `node:http` (no client normalization). Now runnable as [`npm run qa`](../scripts/qa) | Behavior an operator would see: the 50-concurrent rate-limit case, smuggling probes, graceful drain on SIGTERM, breaker trip and recovery. Results posted in one review-and-QA comment per PR, updated rather than duplicated |
 | **5. CI** | [GitHub Actions](../.github/workflows/ci.yml): `npm ci && npm test` on Node 24 for every PR and every push to `main` | Typecheck plus the full suite in a clean environment |
 
-### Also in the toolkit (available, not used in this two-hour window)
+### Also in the toolkit
 
-The same harness carries heavier review workflows that weren't worth their cost under a two-hour clock:
+The same harness carries heavier review workflows:
 - **`/hone`**: an iterative, multi-pass review framework that applies its own fixes.
 - **`/fresh-eyes`**: isolated subagents that didn't write the code run that framework plus a research sanity check of the approach.
 - **`/review-and-test`**: combined code review and manual QA for a PR (a parallel-agent variant also exists).
 - **`/ticket`**: ticket → PR end to end, gated by a deterministic verification loop (tests, lint, typecheck) before each phase can complete.
 - **`/crucible`**: an adversarial reasoning panel (steelmanned positions, cross-examination, blind adjudicators) for contested design decisions.
 - **`/mechanize`**: converts open-ended review instructions into enumerable checks, the source of the "mechanize over judgment" rule above.
-
-## What review caught
-
-Every finding was either fixed with a regression test (confirmed to fail without the fix) or answered with a reason and a follow-up issue.
-
-| PR | Findings |
-|---|---|
-| #13 config | 5 × P2 (header syntax, unsafe mapping paths, envelope lists, cyclic YAML aliases, empty literals), 1 × P3 |
-| #15 core proxy | **P1 request smuggling** (chunked GET), 2 × P2; adversarial re-review: **P1, a second smuggling path** via `Connection: content-length`; then an upload/deadline leak, fixed in #22 |
-| #17 auth | **P1 credential leak** via `X-Request-Id`; P2 duplicate `Authorization` (accepted → #36) |
-| #20 circuit breaker | P2: stale in-flight results re-opening a recovered circuit |
-| #21 health checks | 2 × P2 (fetch "bad ports", query encoding); then a 101 response freezing probes; then the target query dropped |
-| #23 header transforms | 2 × P2, 1 × P3; then 2 × P2 (forged `X-Forwarded-Host`, `__proto__` headers) |
-| #24 retry | **P1** stalled uploads ignoring the deadline; then P2 (that 504 tripping the breaker → 408); then P2 (the deadline-boundary race) |
-| #27 docs | 4 accuracy findings in the docs; then an upstream-101 client hang in the core, fixed in #40 |
-| #14, #18, #19, #22, #25, #26 | No findings |
 
 ## The prompts, verbatim
 
