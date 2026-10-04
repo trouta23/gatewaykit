@@ -6,7 +6,7 @@ Two independent plans were written before any code: one by Claude, one by Codex 
 
 | Topic | Claude | Codex | Resolution |
 |---|---|---|---|
-| **Scope** | Build all ~12 features across parallel lanes; cut at 15:30 | Ship core + auth + rate limit + balancing; defer retry, breaker, health checks, transforms; cut at 15:05 | **Tiered.** Tier 1 = Codex's scope, always shipped. Tier 2/3 run only once Tier 1 is merged. The architecture has a documented slot for every feature, so anything unbuilt is a known next step rather than a gap. |
+| **Scope** | Build all ~12 features across parallel lanes; cut at 15:30 | Ship core + auth + rate limit + balancing; defer retry, breaker, health checks, transforms; cut at 15:05 | **Phased.** Phase 1 = Codex's scope, always shipped. Phase 2/3 run only once Phase 1 is merged. The architecture has a documented slot for every feature, so anything unbuilt is a known next step rather than a gap. |
 | **Pipeline shape** | `Middleware = (next: Handler) => Handler` onion | Explicit guard functions (`authorize`, `admit`, `select`), "no plugin framework" | **Middleware.** Guards can't express retries (call `next` again) or response transforms (map the response) without new contracts. That fails the "add a config feature in an afternoon" bar. `compose()` is ~10 lines, not a framework. |
 | **Auth vs rate-limit order** | Rate limit first (caps key brute force) | Auth first (unauthenticated traffic can't drain a shared `per: global` bucket) | **Auth first.** Starving legitimate users through a shared bucket is a practical attack. Brute-forcing high-entropy API keys is not. This matches Kong's plugin ordering. |
 | **Timeout semantics** | Per attempt | One deadline for the whole logical request, covering retries and backoff | **One total deadline** (Envoy's route-timeout semantics). Otherwise 3 attempts × 5s + backoff turns a 5s timeout into 18s. Retries only start if budget remains. |
@@ -57,7 +57,7 @@ Routes are compiled once at startup. Each one becomes a single composed `Handler
 
 Each issue gets one branch and one PR. Every PR gets a Codex review before it's merged with a merge commit.
 
-| # | Tier | Issue | Lane |
+| # | Phase | Issue | Lane |
 |---|---|---|---|
 | 1 | 1 | Core gateway: strict config, router, /health, 404/405, streaming proxy, strip_prefix, deadline → 502/504, mock upstream, `npm test` (typecheck + tests) | serial |
 | 2 | 1 | Transport hardening: client abort → upstream abort, mid-body failures, hop-by-hop both ways, X-Forwarded-*, Set-Cookie, graceful shutdown | A |
@@ -88,8 +88,8 @@ Each lane edits only its own pre-placed slot line in `src/plugins/index.ts`. Cla
 | 14:00–14:15 | Independent plans → reconciliation → issues |
 | 14:15–14:50 | #1 core (Claude, serial). Codex reviews; merge. |
 | 14:50–15:20 | Lanes A/B/C in parallel worktrees; Codex reviews each PR; merged one at a time |
-| **15:30** | **Cut line: optional features that aren't reviewed, integrated and merged by now are cut** (moved from 15:20 at 14:53, after all Tier 1 work had merged) |
+| **15:30** | **Cut line: optional features that aren't reviewed, integrated and merged by now are cut** (moved from 15:20 at 14:53, after all Phase 1 work had merged) |
 | 15:20–15:45 | #11 docs + acceptance run against an unrelated config; clean-install check |
 | 15:45–16:00 | Buffer, then submit |
 
-If #1 slips past 15:00, Tier 2/3 are dropped outright. Tests and docs are never cut to make room for a feature.
+If #1 slips past 15:00, Phase 2/3 are dropped outright. Tests and docs are never cut to make room for a feature.

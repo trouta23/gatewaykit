@@ -11,7 +11,7 @@ The rubric weighs judgment (35%) and production thinking (25%) above volume, and
 3. **Resilience** that needs the core's contracts: load balancing, circuit breaker, retry, health checks.
 4. **Transforms last.** They touch the most code and reduce the least risk.
 
-Issues carry a tier label (impact and what blocks what) instead of time estimates. Optional work had a hard cut line: anything not reviewed, integrated and merged by then was left out. It started at 15:20 and moved to 15:30 once all Tier 1 work had merged early.
+Issues carry a phase label (impact and what blocks what) instead of time estimates. Optional work had a hard cut line: anything not reviewed, integrated and merged by then was left out. It started at 15:20 and moved to 15:30 once all phase 1 work had merged early.
 
 ## 2. Architecture
 
@@ -43,7 +43,7 @@ The rejected alternative was Express-style `(req, res, next)`. Once a middleware
 |---|---|
 | Malformed config | Every problem is listed with its YAML path, then exit 1 before the port is bound. Unknown keys are errors, because `auht:` must not silently disable auth. |
 | Upstream down | 502 JSON; internal error details are logged, not leaked |
-| Upstream slow | 504 once the route's deadline passes (one deadline per request, covering the body) |
+| Upstream slow | One deadline per request. Expiry before upstream headers → 504. Expiry while the body is streaming → the connection is cut, because the status was already sent and HTTP can't change it |
 | Client disconnects | The upstream request is aborted |
 | Configured feature not built | Startup warning. `auth` fails **closed** (503), so a configured security policy is never skipped. |
 | Request smuggling | Body framing is always re-declared on the upstream request (see §5) |
@@ -72,14 +72,14 @@ The rejected alternative was Express-style `(req, res, next)`. Once a middleware
 - **Parallel feature lanes.** After the core contracts were frozen, Claude subagents built features in separate git worktrees, one issue per PR. I'm the integrator: I merge serially and own the shared files.
 - **Course corrections.** The first core PR was ~1,900 lines and mixed five concerns, so it was closed and split into a three-PR stack. The PR template was rewritten after a quick evidence review: description/code mismatch is the measurable risk, and checkbox lists turn into ceremony.
 - **Merge gate.** Tests green, a Codex review (re-reviewed after fixes), and my own manual QA against the real gateway process. Each PR has one comment holding both. QA caught a test that silently proved nothing: `fetch` normalizes `..` on the client side, so the dot-segment test never exercised the gateway.
-- **Parallelism has a cost.** At peak, five agents and five reviews ran at once, and PRs arrived faster than they could be reviewed well. I capped work in flight at three and merged strictly by tier.
+- **Parallelism has a cost.** At peak, five agents and five reviews ran at once, and PRs arrived faster than they could be reviewed well. I capped work in flight at three and merged strictly by phase.
 - **What the AI didn't decide:** scope, the cut line, and the "base before breadth" pause came from me.
 
 ## 6. Built, partial, and next
 
 **Built** (each merged only after a Codex review, any re-reviews, and my own QA against the real process). The [README checklist](README.md#feature-checklist) has per-feature behavior.
 
-| Tier | Feature | PR |
+| Phase | Feature | PR |
 |---|---|---|
 | 1 | Core: strict config, routing, `/health`, 404/405, streaming proxy, deadlines | #13, #14, #15 |
 | 1 | Rate limiting (fixed and sliding, per IP and global) | #19 |
@@ -98,6 +98,9 @@ The rejected alternative was Express-style `(req, res, next)`. Once a middleware
 - Node keeps only the first `Authorization` header when duplicates arrive. It isn't a bypass, since the request still needs a valid key; fixing it means carrying `headersDistinct` through the request contract.
 - A 504 that the forwarder raises because earlier middleware used up the whole deadline counts as a breaker failure, although no upstream was contacted. Retry handles its own case (a slow upload is a 408).
 - Health state changes aren't logged, because `BuildContext` has no logger yet.
+- Response transforms apply to upstream responses only. Gateway-generated errors (401, 429, 502/504, 503 from the breaker) are rendered without them, so a configured header such as `Access-Control-Allow-Origin` is missing on those errors.
+- Retry buffers retry-eligible request bodies so it can replay them, capped at 10 MiB (413 above that) even with `attempts: 1`. Large PUT uploads on a retry route need streaming retry, which is not built.
+- A deadline that expires while a response body is streaming cuts the connection instead of returning 504, since the 200 status line has already been sent.
 - Response transforms can't remove the `X-RateLimit-*` headers, because rate limiting wraps them.
 - All state is in-process. Limits and breaker state reset on restart and aren't shared between instances.
 

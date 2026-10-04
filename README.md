@@ -25,7 +25,7 @@ See the [feature checklist](#feature-checklist) for exactly what's implemented.
 
 ## Quick start
 
-Requires **Node.js 24+**, which runs TypeScript directly, so there's no build step.
+Requires **Node.js 24+**, which runs TypeScript directly, so there's no build step. `npm ci --omit=dev` installs exactly one package (`yaml`) and is enough to run the gateway. `typescript` and `@types/node` are dev-only, for typechecking.
 
 ```bash
 npm ci
@@ -81,14 +81,14 @@ A feature can reject a request (auth, rate limit, an open breaker), call `next` 
 | `GET /health` | ✅ | Reserved, answered before routing: `{"status":"healthy","uptime_seconds":N}` |
 | `routes[].path`, `methods` | ✅ | Longest segment-boundary prefix; 404 / 405 + `Allow` |
 | `routes[].strip_prefix` | ✅ | `/api/products/123` → `/123`; the query string is kept byte-for-byte |
-| `global_timeout`, `upstream.timeout` | ✅ | One deadline per request, covering the response body → 504; unreachable upstream → 502 |
+| `global_timeout`, `upstream.timeout` | ✅ | One deadline per request. Expiry before upstream headers → 504; expiry while the body streams → the connection is cut (the status is already sent); unreachable upstream → 502 |
 | `auth` (`api_key`) | ✅ | 401 without a valid key; the key header is stripped before forwarding |
 | `global_rate_limit`, `rate_limit` | ✅ | `fixed_window` / `sliding_window`, `per: ip` / `global`; 429 + `Retry-After` |
 | `upstream.targets`, `balance` | ✅ | `round_robin`, smooth `weighted_round_robin` |
 | `circuit_breaker` | ✅ | Trips after `threshold` failures in `window`; 503 `{"error":"service_unavailable","retry_after":N}`; one probe after `cooldown` |
-| `retry` | ✅ | Idempotent methods only (never POST); fixed or exponential backoff inside the request deadline; a stalled upload → 408 |
+| `retry` | ✅ | Idempotent methods only (never POST); fixed or exponential backoff inside the request deadline. To replay them, retry-eligible request bodies are buffered (max 10 MiB → 413); a stalled upload → 408 |
 | `health_check` | ✅ | Active GET probes; unhealthy after `unhealthy_threshold` failures; fails open if every target is down |
-| `request_transform.headers`, `response_transform.headers` | ✅ | `add` / `remove`, `$request_time`, `$response_time`, `$route_path`, `$literal:`; connection and framing headers are protected |
+| `request_transform.headers`, `response_transform.headers` | ✅ | `add` / `remove`, `$request_time`, `$response_time`, `$route_path`, `$literal:`; connection and framing headers are protected. Response transforms apply to upstream responses only, not to gateway-generated errors (401, 429, 502, …) |
 | `request_transform.body.mapping`, `response_transform.body.envelope` | ❌ | Validated at startup, but not applied (startup warning) |
 
 A feature that is configured but not built logs a startup warning and is skipped. The exception is `auth`, which **fails closed** (503).
