@@ -82,7 +82,18 @@ function send(target: URL, req: GatewayRequest, timeoutMs: number): Promise<Gate
     // Destroyed before finishing (upstream reset, abort): nothing is left to upload.
     upstreamReq.once('close', onUploadDone);
 
+    // Settles a request that closes with neither a response nor an error. An
+    // upstream answering 101 Switching Protocols does exactly that (upgrades aren't
+    // proxied), and the client would otherwise hang past its deadline.
+    let answered = false;
+    upstreamReq.once('close', () => {
+      if (answered) return;
+      release();
+      reject(timedOut ? timeoutError(req) : new GatewayError(502, 'bad_gateway', { message: 'upstream closed without a response' }));
+    });
+
     upstreamReq.on('response', (res) => {
+      answered = true;
       res.once('close', () => {
         responseDone = true;
         settle();
