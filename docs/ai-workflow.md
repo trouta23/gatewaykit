@@ -58,6 +58,28 @@ The agents proposed; these calls were mine, made in the moment:
 - No decorative badges: earn one with real CI. Publish the QA scripts instead of keeping them local.
 - Move the cut line from 15:20 to 15:30. File honest follow-up issues for what's left.
 
+## The review stack
+
+"Code review" here means five independent layers. A PR merged only when all of them passed.
+
+| Layer | How | What it checks |
+|---|---|---|
+| **1. Regression proof** | Every fix ships with a test, and the test is run against the *previous* code to confirm it fails there | That a test guards the bug. One test silently proved nothing (`fetch` normalizes `..` on the client, so the gateway never saw the path), and this check caught it |
+| **2. Codex review** | `codex review --base origin/main` (OpenAI Codex CLI via its Claude Code plugin; gpt-6-astra at `xhigh`) | A model that didn't write the code reads the branch diff plus the standing rules in [`AGENTS.md`](../AGENTS.md) in a read-only sandbox, runs the typecheck and tests, writes its own reproductions, and reports findings ranked P0–P3 with `file:line` |
+| **3. Codex adversarial re-review** | `codex adversarial-review --base origin/main "<focus>"` after every fix | Structured verdict (`approve` / `needs-attention`) from a red-team pass told to *try to break it again*. It verifies each fix and hunts for new paths. Examples from this project: **500 randomized concurrency schedules** against the circuit breaker (#20), **88 adversarial HTTP probes** against header transforms (#23), **48 probe/forwarder wire comparisons** for health checks (#21) |
+| **4. Integrator QA** | The real `node src/main.ts` process against mock upstreams, with requests sent over raw `node:http` (no client normalization). Now runnable as [`npm run qa`](../scripts/qa) | Behavior an operator would see: the 50-concurrent rate-limit case, smuggling probes, graceful drain on SIGTERM, breaker trip and recovery. Results posted in one review-and-QA comment per PR, updated rather than duplicated |
+| **5. CI** | [GitHub Actions](../.github/workflows/ci.yml): `npm ci && npm test` on Node 24 for every PR and every push to `main` | Typecheck plus the full suite in a clean environment |
+
+### Also in the toolkit (available, not used in this two-hour window)
+
+The same harness carries heavier review workflows that weren't worth their cost under a two-hour clock:
+- **`/hone`**: an iterative, multi-pass review framework that applies its own fixes.
+- **`/fresh-eyes`**: isolated subagents that didn't write the code run that framework plus a research sanity check of the approach.
+- **`/review-and-test`**: combined code review and manual QA for a PR (a parallel-agent variant also exists).
+- **`/ticket`**: ticket → PR end to end, gated by a deterministic verification loop (tests, lint, typecheck) before each phase can complete.
+- **`/crucible`**: an adversarial reasoning panel (steelmanned positions, cross-examination, blind adjudicators) for contested design decisions.
+- **`/mechanize`**: converts open-ended review instructions into enumerable checks, the source of the "mechanize over judgment" rule above.
+
 ## What review caught
 
 Every finding was either fixed with a regression test (confirmed to fail without the fix) or answered with a reason and a follow-up issue.
