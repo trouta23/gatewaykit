@@ -7,6 +7,7 @@ import core from './core.ts';
 import headerTransforms from './header-transforms.ts';
 import healthChecks from './health-checks.ts';
 import loadBalancing from './load-balancing.ts';
+import pathAliases from './path-aliases.ts';
 import rateLimit from './rate-limit.ts';
 import retry from './retry.ts';
 import transport from './transport.ts';
@@ -21,6 +22,7 @@ const scenarios: Record<string, () => Promise<void>> = {
   'header-transforms': headerTransforms,
   'health-checks': healthChecks,
   retry,
+  'path-aliases': pathAliases,
 };
 
 const requested = process.argv.slice(2);
