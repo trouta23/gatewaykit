@@ -6,6 +6,8 @@
 
 Point it at a `gateway.yaml` and it routes, authenticates, rate-limits, load-balances and protects traffic to your upstream services. There are no frameworks: the HTTP server and client are Node's standard library, and the only runtime dependency is a YAML parser.
 
+**Status:** v0.1. Runs as a single instance with in-memory state, so rate limits and breaker state reset on restart. Body transforms aren't built yet (see the [roadmap](#roadmap)).
+
 ---
 
 ## Features
@@ -25,24 +27,28 @@ See the [feature checklist](#feature-checklist) for exactly what's implemented.
 
 ## Quick start
 
-Requires **Node.js 24+**, which runs TypeScript directly, so there's no build step. `npm ci --omit=dev` installs exactly one package (`yaml`) and is enough to run the gateway. `typescript` and `@types/node` are dev-only, for typechecking.
+Requires **Node.js 24+**, which runs TypeScript directly, so there's no build step.
 
 ```bash
 npm ci
-npm run mock                            # terminal 1: mock upstreams on :3001-3006
-node src/main.ts config/gateway.yaml    # terminal 2: gateway on :8080
+npm run mock    # terminal 1: mock upstreams on :3001-3006
+npm start       # terminal 2: gateway on :8080, using config/gateway.yaml
 ```
+
+The example config's `/api/legacy` route uses body transforms, which aren't built yet, so expect two startup warnings saying they're ignored.
+
+To only *run* the gateway, `npm ci --omit=dev` is enough: it installs exactly one package (`yaml`). Tests and typechecking need the dev dependencies (`typescript`, `@types/node`), so use plain `npm ci` for those.
 
 ```bash
-curl localhost:8080/health                                         # {"status":"healthy","uptime_seconds":3}
-curl localhost:8080/api/users/42                                   # proxied to :3001
-curl localhost:8080/api/products/123                               # strip_prefix → upstream sees /123
-curl -X POST localhost:8080/api/products                           # 405, Allow: GET
-curl localhost:8080/api/internal                                   # 401 (api_key required)
-curl -H 'X-API-Key: sk_live_abc123' localhost:8080/api/internal    # 200
+curl -i localhost:8080/health                                      # {"status":"healthy","uptime_seconds":3}
+curl -i localhost:8080/api/users/42                                # proxied to :3001
+curl -i localhost:8080/api/products/123                            # strip_prefix → upstream sees /123
+curl -i -X POST localhost:8080/api/products                        # 405, Allow: GET
+curl -i localhost:8080/api/internal                                # 401 (api_key required)
+curl -i -H 'X-API-Key: sk_live_abc123' localhost:8080/api/internal # 200
 ```
 
-The config path comes from the first argument, then the `GATEWAY_CONFIG` environment variable, then `config/gateway.yaml` (so a bare `npm start` runs the example). An invalid config never starts:
+The config path comes from the first argument (`npm start -- other.yaml`), then the `GATEWAY_CONFIG` environment variable, then `config/gateway.yaml` (so a bare `npm start` runs the example). An invalid config never starts:
 
 ```
 $ node src/main.ts broken.yaml
@@ -75,7 +81,7 @@ A feature can reject a request (auth, rate limit, an open breaker), call `next` 
 
 ## Feature checklist
 
-| Config key | Status | Behavior |
+| Config key / endpoint | Status | Behavior |
 |---|---|---|
 | `gateway.port` | ✅ | Defaults to 8080 |
 | `GET /health` | ✅ | Reserved, answered before routing: `{"status":"healthy","uptime_seconds":N}` |
@@ -83,7 +89,7 @@ A feature can reject a request (auth, rate limit, an open breaker), call `next` 
 | `routes[].strip_prefix` | ✅ | `/api/products/123` → `/123`; the query string is kept byte-for-byte |
 | `global_timeout`, `upstream.timeout` | ✅ | One deadline per request. Expiry before upstream headers → 504; expiry while the body streams → the connection is cut (the status is already sent); unreachable upstream → 502 |
 | `auth` (`api_key`) | ✅ | 401 without a valid key; the key header is stripped before forwarding |
-| `global_rate_limit`, `rate_limit` | ✅ | `fixed_window` / `sliding_window`, `per: ip` / `global`; 429 + `Retry-After` |
+| `global_rate_limit`, `rate_limit` | ✅ | `fixed_window` / `sliding_window`, `per: ip` / `global`; a route's `rate_limit` replaces the global default (they don't stack); 429 + `Retry-After` |
 | `upstream.targets`, `balance` | ✅ | `round_robin`, smooth `weighted_round_robin` |
 | `circuit_breaker` | ✅ | Trips after `threshold` failures in `window`; 503 `{"error":"service_unavailable","retry_after":N}`; one probe after `cooldown` |
 | `retry` | ✅ | Idempotent methods only (never POST); fixed or exponential backoff inside the request deadline. To replay them, retry-eligible request bodies are buffered (max 10 MiB → 413); a stalled upload → 408 |
@@ -91,7 +97,7 @@ A feature can reject a request (auth, rate limit, an open breaker), call `next` 
 | `request_transform.headers`, `response_transform.headers` | ✅ | `add` / `remove`, `$request_time`, `$response_time`, `$route_path`, `$literal:`; connection and framing headers are protected. Response transforms apply to upstream responses only, not to gateway-generated errors (401, 429, 502, …) |
 | `request_transform.body.mapping`, `response_transform.body.envelope` | ❌ | Validated at startup, but not applied (startup warning) |
 
-A feature that is configured but not built logs a startup warning and is skipped. The exception is `auth`, which **fails closed** (503).
+Body transforms are the only config keys without an implementation. They log a startup warning and are skipped. A security feature is never skipped that way: an unimplemented `auth` would **fail closed** (503) instead.
 
 ## Testing
 
@@ -121,6 +127,7 @@ Each scenario in [`scripts/qa/`](scripts/qa) spawns the real `node src/main.ts` 
 src/main.ts            entry point: config path, startup, graceful shutdown
 src/config/            YAML loading, validation, normalized types
 src/server.ts          HTTP server: /health, routing, 404/405, error rendering
+src/router.ts          longest-prefix route matching on path segments
 src/pipeline.ts        Handler / Middleware / Plugin contracts
 src/plugins/           one file per config feature, plus the ordered registry
 src/proxy/             upstream forwarding: deadline, body framing, header hygiene
@@ -128,7 +135,7 @@ src/upstream/          target selection: load balancing and health checks
 mock/upstream.ts       mock upstream for tests and demos
 scripts/qa/            manual QA scenarios against the real process (npm run qa)
 test/                  node:test suites
-docs/                  the plan, and the two independent AI plans it reconciled
+docs/                  the plan, the two independent AI plans it reconciled, the AI workflow and its prompts
 ```
 
 ## How this was built
