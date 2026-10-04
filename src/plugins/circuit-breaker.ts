@@ -27,25 +27,42 @@ export const circuitBreakerPlugin: Plugin = {
     /** Set while open or half-open: when the cooldown ends. */
     let openUntil: number | undefined;
     let probeInFlight = false;
+    /**
+     * Bumped on every transition (open, half-open, closed). A request is
+     * admitted in one generation and may settle in a later one: with a
+     * cooldown shorter than the route timeout, a slow request admitted before
+     * the trip can fail after a successful probe has closed the circuit. Its
+     * result describes an upstream state that no longer exists, so it is
+     * ignored rather than counted against the new closed period.
+     */
+    let generation = 0;
 
     const open = (now: number): void => {
+      generation += 1;
       openUntil = now + cooldownMs;
       failures = [];
     };
+    const halfOpen = (): void => {
+      generation += 1;
+      probeInFlight = true;
+    };
+    const close = (): void => {
+      generation += 1;
+      openUntil = undefined;
+    };
 
-    const record = (isProbe: boolean, outcome: Outcome): void => {
+    const record = (admittedIn: number, isProbe: boolean, outcome: Outcome): void => {
+      if (admittedIn !== generation) return;
       const now = ctx.now();
       if (isProbe) {
         probeInFlight = false;
-        if (outcome === 'success') openUntil = undefined;
+        if (outcome === 'success') close();
         else if (outcome === 'failure') open(now);
         // Inconclusive (e.g. the client went away): stay half-open, so the
         // next request becomes the probe.
         return;
       }
-      // A request admitted before the circuit opened must not move it: only
-      // the probe decides when an open circuit closes.
-      if (openUntil !== undefined || outcome !== 'failure') return;
+      if (outcome !== 'failure') return;
       failures = failures.filter((at) => at > now - windowMs);
       failures.push(now);
       if (failures.length >= threshold) open(now);
@@ -56,18 +73,19 @@ export const circuitBreakerPlugin: Plugin = {
       if (openUntil !== undefined) {
         const now = ctx.now();
         if (now < openUntil || probeInFlight) throw unavailable(openUntil - now);
-        probeInFlight = true;
+        halfOpen();
         isProbe = true;
       }
+      const admittedIn = generation;
 
       let response: GatewayResponse;
       try {
         response = await next(req);
       } catch (error) {
-        record(isProbe, classifyError(error));
+        record(admittedIn, isProbe, classifyError(error));
         throw error;
       }
-      record(isProbe, response.status >= 500 ? 'failure' : 'success');
+      record(admittedIn, isProbe, response.status >= 500 ? 'failure' : 'success');
       return response;
     };
   },

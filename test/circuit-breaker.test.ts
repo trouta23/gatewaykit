@@ -167,6 +167,21 @@ describe('circuit breaker plugin', () => {
     b.advance(1_000);
     assert.equal((await b.respond(200)).status, 200, 'the probe runs on the original schedule');
   });
+
+  it('ignores failures from before the trip that settle after a successful probe', async () => {
+    // Cooldown (5s) shorter than the time these requests stay pending: they
+    // were admitted while closed and fail only after the circuit has recovered.
+    const b = harness();
+    const slow = [deferred(), deferred(), deferred()];
+    const pending = slow.map((d) => b.call(() => d.promise));
+    for (let i = 0; i < 3; i++) await b.respond(500); // opens
+    b.advance(5_000);
+    assert.equal((await b.respond(200)).status, 200, 'the probe succeeds and closes the circuit');
+
+    for (const d of slow) d.resolve(reply(500));
+    await Promise.all(pending);
+    assert.equal((await b.respond(200)).status, 200, 'stale failures do not count against the new closed period');
+  });
 });
 
 describe('circuit breaker through the gateway', () => {
