@@ -95,20 +95,22 @@ The rejected alternative was Express-style `(req, res, next)`. Once a middleware
 **Not built:** body transforms (`request_transform.body.mapping`, `response_transform.body.envelope`, #10). Their config is fully validated at startup (unsafe mapping paths, unknown `$variables` and cyclic aliases are all rejected), and the gateway logs a warning that they aren't applied. They were last in priority: they need body buffering, JSON parsing and new failure modes (invalid client JSON → 400, invalid upstream JSON → 502) for the least risk reduction.
 
 **Known limitations** (all deliberate, all documented on their PRs):
-- Node keeps only the first `Authorization` header when duplicates arrive. It isn't a bypass, since the request still needs a valid key; fixing it means carrying `headersDistinct` through the request contract.
-- A 504 that the forwarder raises because earlier middleware used up the whole deadline counts as a breaker failure, although no upstream was contacted. Retry handles its own case (a slow upload is a 408).
-- Health state changes aren't logged, because `BuildContext` has no logger yet.
-- Response transforms apply to upstream responses only. Gateway-generated errors (401, 429, 502/504, 503 from the breaker) are rendered without them, so a configured header such as `Access-Control-Allow-Origin` is missing on those errors.
-- Retry buffers retry-eligible request bodies so it can replay them, capped at 10 MiB (413 above that) even with `attempts: 1`. Large PUT uploads on a retry route need streaming retry, which is not built.
+- Node keeps only the first `Authorization` header when duplicates arrive. It isn't a bypass, since the request still needs a valid key; fixing it means carrying `headersDistinct` through the request contract (#36).
+- A 504 that the forwarder raises because earlier middleware used up the whole deadline counts as a breaker failure, although no upstream was contacted. Retry handles its own case (a slow upload is a 408) (#34).
+- Health state changes aren't logged, because `BuildContext` has no logger yet (#32).
+- Response transforms apply to upstream responses only. Gateway-generated errors (401, 429, 502/504, 503 from the breaker) are rendered without them, so a configured header such as `Access-Control-Allow-Origin` is missing on those errors (#35).
+- Retry buffers retry-eligible request bodies so it can replay them, capped at 10 MiB (413 above that) even with `attempts: 1`. Large PUT uploads on a retry route need streaming retry, which is not built (#37).
 - A deadline that expires while a response body is streaming cuts the connection instead of returning 504, since the 200 status line has already been sent.
 - Response transforms can't remove the `X-RateLimit-*` headers, because rate limiting wraps them.
-- All state is in-process. Limits and breaker state reset on restart and aren't shared between instances.
+- All state is in-process. Limits and breaker state reset on restart and aren't shared between instances (#28).
+- Protocol upgrades (WebSocket) aren't proxied. `Upgrade` is stripped as hop-by-hop, and an upstream that answers 101 anyway gets a 502 (#40).
 
 **Next, with more time:**
 - Body transforms (#10), on the same buffering path that retry now uses
-- A shared store (e.g. Redis) so limits and breaker state hold across instances
-- Passive health checks (eject a target after real-traffic failures) alongside the active probes
-- Hot config reload, with an atomic swap of compiled routes
-- Retry jitter, plus per-try timeouts inside the overall deadline
-- A logger in `BuildContext`, and per-route latency and status metrics
-- HTTPS upstream tests (the code path exists; no TLS mock yet)
+- A shared store (e.g. Redis) so limits and breaker state hold across instances (#28)
+- Passive health checks (eject a target after real-traffic failures) alongside the active probes (#29)
+- Hot config reload, with an atomic swap of compiled routes (#30)
+- Retry jitter (randomized backoff, so failed clients don't retry in lockstep), plus honoring upstream `Retry-After` (#31)
+- A logger in `BuildContext` (#32), and per-route latency and status metrics (#33)
+- Trusted-proxy configuration so `per: ip` works behind a load balancer (#38)
+- HTTPS upstream tests (the code path exists; no TLS mock yet) (#39)
