@@ -2,8 +2,8 @@ import { loadConfig } from './config/load.ts';
 import { ConfigError } from './config/validate.ts';
 import { createGateway } from './server.ts';
 
-// Config path: first CLI argument, then GATEWAY_CONFIG, then ./gateway.yaml.
-const configPath = process.argv[2] ?? process.env.GATEWAY_CONFIG ?? 'gateway.yaml';
+// Config path: first CLI argument, then GATEWAY_CONFIG, then the shipped config/gateway.yaml.
+const configPath = process.argv[2] ?? process.env.GATEWAY_CONFIG ?? 'config/gateway.yaml';
 
 let config;
 try {

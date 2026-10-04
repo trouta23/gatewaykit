@@ -42,7 +42,7 @@ curl localhost:8080/api/internal                                   # 401 (api_ke
 curl -H 'X-API-Key: sk_live_abc123' localhost:8080/api/internal    # 200
 ```
 
-The config path comes from the first argument, then the `GATEWAY_CONFIG` environment variable, then `./gateway.yaml`. An invalid config never starts:
+The config path comes from the first argument, then the `GATEWAY_CONFIG` environment variable, then `config/gateway.yaml` (so a bare `npm start` runs the example). An invalid config never starts:
 
 ```
 $ node src/main.ts broken.yaml
