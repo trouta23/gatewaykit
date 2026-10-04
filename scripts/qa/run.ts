@@ -5,6 +5,7 @@ import auth from './auth.ts';
 import circuitBreaker from './circuit-breaker.ts';
 import core from './core.ts';
 import headerTransforms from './header-transforms.ts';
+import healthChecks from './health-checks.ts';
 import loadBalancing from './load-balancing.ts';
 import rateLimit from './rate-limit.ts';
 import transport from './transport.ts';
@@ -17,6 +18,7 @@ const scenarios: Record<string, () => Promise<void>> = {
   'circuit-breaker': circuitBreaker,
   transport,
   'header-transforms': headerTransforms,
+  'health-checks': healthChecks,
 };
 
 const requested = process.argv.slice(2);
