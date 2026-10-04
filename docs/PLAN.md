@@ -88,7 +88,7 @@ Each lane edits only its own pre-placed slot line in `src/plugins/index.ts`. Cla
 | 14:00–14:15 | Independent plans → reconciliation → issues |
 | 14:15–14:50 | #1 core (Claude, serial). Codex reviews; merge. |
 | 14:50–15:20 | Lanes A/B/C in parallel worktrees; Codex reviews each PR; merged one at a time |
-| **15:20** | **Cut line: optional features that aren't reviewed, integrated and merged by now are cut** |
+| **15:30** | **Cut line: optional features that aren't reviewed, integrated and merged by now are cut** (moved from 15:20 at 14:53, after all Tier 1 work had merged) |
 | 15:20–15:45 | #11 docs + acceptance run against an unrelated config; clean-install check |
 | 15:45–16:00 | Buffer, then submit |
 
