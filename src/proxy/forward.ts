@@ -76,10 +76,11 @@ function send(target: URL, req: GatewayRequest, timeoutMs: number): Promise<Gate
 }
 
 /**
- * Decides the upstream body and declares its framing explicitly. Transfer-Encoding
- * is hop-by-hop and gets stripped, and Node only re-chunks by default for methods
- * that usually carry a body; without this, a chunked GET would be forwarded as raw
- * unframed bytes the upstream parses as a second, smuggled request.
+ * Decides the upstream body and always re-declares its framing from the incoming
+ * request, which Node's parser has already validated. Hop-by-hop stripping can drop
+ * the framing header (Transfer-Encoding always; Content-Length if the client lists it
+ * in `Connection`), and Node only re-frames by default for methods that usually carry
+ * a body. Unframed bytes would be parsed upstream as a second, smuggled request.
  */
 function frameBody(req: GatewayRequest, headers: http.OutgoingHttpHeaders): Body {
   const { body } = req;
@@ -89,7 +90,12 @@ function frameBody(req: GatewayRequest, headers: http.OutgoingHttpHeaders): Body
     else headers['content-length'] = body.length;
     return body;
   }
-  if (req.headers['content-length'] !== undefined) return body;
+  const contentLength = req.headers['content-length'];
+  if (contentLength !== undefined) {
+    headers['content-length'] = contentLength;
+    delete headers['transfer-encoding'];
+    return body;
+  }
   if (req.headers['transfer-encoding'] !== undefined) {
     headers['transfer-encoding'] = 'chunked';
     return body;

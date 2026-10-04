@@ -87,19 +87,24 @@ describe('core gateway', () => {
     assert.equal(JSON.parse(res.body).url, "/alpha/q?name='o''neil'&empty=&flag");
   });
 
-  it('re-frames a chunked body on a GET so it cannot smuggle a second request', async () => {
-    const before = mocks.alpha.requests.length;
-    const smuggled = 'GET /alpha/smuggled HTTP/1.1\r\nHost: x\r\n\r\n';
-    const res = await rawRequest(gateway.url, '/alpha/visible', {
-      headers: { 'transfer-encoding': 'chunked' },
-      body: smuggled,
+  // Each case tries to make the gateway forward a GET body without framing, so the
+  // upstream would parse the payload as a second request that skipped gateway policies.
+  const smuggled = 'GET /alpha/smuggled HTTP/1.1\r\nHost: x\r\n\r\n';
+  const smugglingCases: Array<[string, Record<string, string>]> = [
+    ['chunked body on a GET', { 'transfer-encoding': 'chunked' }],
+    ['Content-Length listed in Connection', { 'content-length': String(smuggled.length), connection: 'content-length' }],
+  ];
+  for (const [name, headers] of smugglingCases) {
+    it(`keeps body framing so a request cannot be smuggled: ${name}`, async () => {
+      const before = mocks.alpha.requests.length;
+      const res = await rawRequest(gateway.url, '/alpha/visible', { headers, body: smuggled });
+      assert.equal(res.status, 200);
+      assert.equal(JSON.parse(res.body).body, smuggled, "the payload arrives as this request's body");
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const seen = mocks.alpha.requests.slice(before).map((r) => r.url);
+      assert.deepEqual(seen, ['/alpha/visible'], 'the upstream saw exactly one request');
     });
-    assert.equal(res.status, 200);
-    assert.equal(JSON.parse(res.body).body, smuggled, 'the payload arrives as this request\'s body');
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    const seen = mocks.alpha.requests.slice(before).map((r) => r.url);
-    assert.deepEqual(seen, ['/alpha/visible'], 'the upstream saw exactly one request');
-  });
+  }
 
   it('an unreachable upstream returns 502 JSON', async () => {
     const res = await fetch(`${gateway.url}/down`);
