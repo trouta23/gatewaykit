@@ -1,3 +1,4 @@
+import { validateHeaderName, validateHeaderValue } from 'node:http';
 import { parseDuration } from './duration.ts';
 import type {
   AuthConfig,
@@ -29,6 +30,8 @@ const DEFAULT_PORT = 8080;
 const DEFAULT_TIMEOUT_MS = 30_000;
 const HTTP_METHODS = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']);
 const TEMPLATE_VARIABLES = new Set(['$request_time', '$response_time', '$body', '$route_path']);
+/** Path segments that would reach Object.prototype when a mapping writes them. */
+const UNSAFE_SEGMENTS = new Set(['__proto__', 'prototype', 'constructor']);
 
 type Raw = Record<string, unknown>;
 
@@ -62,7 +65,8 @@ class Reader {
 
   integer(value: unknown, path: string, min: number, max = Number.MAX_SAFE_INTEGER): number | undefined {
     if (typeof value !== 'number' || !Number.isInteger(value) || value < min || value > max) {
-      return this.fail(path, `must be an integer between ${min} and ${max}`);
+      const range = max === Number.MAX_SAFE_INTEGER ? `>= ${min}` : `between ${min} and ${max}`;
+      return this.fail(path, `must be an integer ${range}`);
     }
     return value;
   }
@@ -89,24 +93,33 @@ class Reader {
     return items.every((item) => item !== undefined) ? (items as string[]) : undefined;
   }
 
-  stringMap(value: unknown, path: string): Record<string, string> | undefined {
+  /** fromEntries creates own properties, so a key like "__proto__" survives instead of hitting the prototype setter. */
+  stringMap(value: unknown, path: string, { allowEmpty = false } = {}): Record<string, string> | undefined {
     const raw = this.object(value, path, Object.keys(value ?? {}));
     if (!raw) return undefined;
-    const result: Record<string, string> = {};
-    for (const [key, item] of Object.entries(raw)) {
-      const str = this.template(item, `${path}.${key}`);
-      if (str !== undefined) result[key] = str;
-    }
-    return result;
+    const entries = Object.entries(raw).map(([key, item]) => [key, this.template(item, `${path}.${key}`, { allowEmpty })]);
+    return entries.every(([, item]) => item !== undefined) ? Object.fromEntries(entries) : undefined;
   }
 
   /** Strings that may reference `$variables`; unknown variables are rejected at startup. */
-  template(value: unknown, path: string): string | undefined {
-    const str = this.string(value, path);
+  template(value: unknown, path: string, { allowEmpty = false } = {}): string | undefined {
+    const str = allowEmpty && value === '' ? '' : this.string(value, path);
     if (str?.startsWith('$') && !str.startsWith('$literal:') && !TEMPLATE_VARIABLES.has(str)) {
       return this.fail(path, `unknown variable "${str}"`);
     }
     return str;
+  }
+
+  /** Rejects names Node would refuse to send, so a bad header fails at startup, not per request. */
+  headerName(value: unknown, path: string): string | undefined {
+    const name = this.string(value, path);
+    if (name === undefined) return undefined;
+    try {
+      validateHeaderName(name);
+    } catch {
+      return this.fail(path, `"${name}" is not a valid HTTP header name`);
+    }
+    return name;
   }
 
   url(value: unknown, path: string): URL | undefined {
@@ -301,8 +314,19 @@ function readHealthCheck(r: Reader, value: unknown, path: string): HealthCheckCo
 function readHeaderTransform(r: Reader, value: unknown, path: string): HeaderTransformConfig | undefined {
   const raw = r.object(value, path, ['add', 'remove']);
   if (!raw) return undefined;
-  const add = raw.add === undefined ? {} : r.stringMap(raw.add, `${path}.add`);
+  const add = raw.add === undefined ? {} : r.stringMap(raw.add, `${path}.add`, { allowEmpty: true });
+  for (const [name, headerValue] of Object.entries(add ?? {})) {
+    r.headerName(name, `${path}.add.${name}`);
+    const literal = headerValue.startsWith('$literal:') ? headerValue.slice('$literal:'.length) : headerValue;
+    if (headerValue.startsWith('$') && !headerValue.startsWith('$literal:')) continue;
+    try {
+      validateHeaderValue(name, literal);
+    } catch {
+      r.fail(`${path}.add.${name}`, 'contains characters not allowed in an HTTP header value');
+    }
+  }
   const remove = raw.remove === undefined ? [] : r.stringList(raw.remove, `${path}.remove`);
+  remove?.forEach((name, i) => r.headerName(name, `${path}.remove[${i}]`));
   return add && remove ? { add, remove } : undefined;
 }
 
@@ -314,7 +338,7 @@ function readRequestTransform(r: Reader, value: unknown, path: string): RequestT
   if (raw.body !== undefined) {
     const body = r.object(raw.body, `${path}.body`, ['mapping']);
     const mapping = body ? r.stringMap(body.mapping, `${path}.body.mapping`) : undefined;
-    if (mapping) result.body = { mapping };
+    if (mapping && validMapping(r, mapping, `${path}.body.mapping`)) result.body = { mapping };
   }
   return result;
 }
@@ -332,22 +356,58 @@ function readResponseTransform(r: Reader, value: unknown, path: string): Respons
   return result;
 }
 
-/** An envelope is a nested mapping whose leaves are literals or `$variables`. */
+/**
+ * Destinations and sources are dot paths. Unsafe segments could pollute
+ * Object.prototype, and "user" plus "user.id" would overwrite each other.
+ */
+function validMapping(r: Reader, mapping: Record<string, string>, path: string): boolean {
+  const before = r.problems.length;
+  const destinations = Object.keys(mapping);
+  for (const [destination, source] of Object.entries(mapping)) {
+    const paths = source.startsWith('$') ? [destination] : [destination, source];
+    for (const dotPath of paths) {
+      if (dotPath.split('.').some((segment) => segment === '' || UNSAFE_SEGMENTS.has(segment))) {
+        r.fail(`${path}.${destination}`, `"${dotPath}" is not a safe dot path`);
+      }
+    }
+    const child = destinations.find((other) => other.startsWith(`${destination}.`));
+    if (child) r.fail(`${path}.${destination}`, `conflicts with "${child}"`);
+  }
+  return r.problems.length === before;
+}
+
+/** An envelope is nested mappings and lists whose string leaves are literals or `$variables`. */
 function readEnvelope(r: Reader, value: unknown, path: string): Record<string, unknown> | undefined {
   const raw = r.object(value, path, Object.keys(value ?? {}));
   if (!raw) return undefined;
-  for (const [key, item] of Object.entries(raw)) {
-    if (typeof item === 'object' && item !== null && !Array.isArray(item)) readEnvelope(r, item, `${path}.${key}`);
-    else if (typeof item === 'string') r.template(item, `${path}.${key}`);
-  }
+  checkEnvelopeValue(r, raw, path, new Set());
   return raw;
+}
+
+function checkEnvelopeValue(r: Reader, value: unknown, path: string, ancestors: Set<object>): void {
+  if (typeof value === 'string') {
+    r.template(value, path, { allowEmpty: true });
+    return;
+  }
+  if (typeof value !== 'object' || value === null) return;
+  // YAML aliases can build cycles (`&e {self: *e}`); shared, non-cyclic aliases stay legal.
+  if (ancestors.has(value)) {
+    r.fail(path, 'must not contain a cyclic YAML alias');
+    return;
+  }
+  ancestors.add(value);
+  const children: Array<[string, unknown]> = Array.isArray(value)
+    ? value.map((item, i): [string, unknown] => [`${path}[${i}]`, item])
+    : Object.entries(value).map(([key, item]): [string, unknown] => [`${path}.${key}`, item]);
+  for (const [childPath, child] of children) checkEnvelopeValue(r, child, childPath, ancestors);
+  ancestors.delete(value);
 }
 
 function readAuth(r: Reader, value: unknown, path: string): AuthConfig | undefined {
   const raw = r.object(value, path, ['type', 'header', 'keys']);
   if (!raw) return undefined;
   const type = r.oneOf(raw.type, `${path}.type`, ['api_key'] as const);
-  const header = r.string(raw.header, `${path}.header`);
+  const header = r.headerName(raw.header, `${path}.header`);
   const keys = r.stringList(raw.keys, `${path}.keys`, { nonEmpty: true });
   return type && header && keys ? { type, header: header.toLowerCase(), keys } : undefined;
 }

@@ -99,3 +99,52 @@ describe('parseDuration', () => {
     for (const bad of ['30', '0s', '-1s', 's', '1d', '1000h']) assert.equal(parseDuration(bad), undefined, bad);
   });
 });
+
+describe('config hardening (Codex review on PR #13)', () => {
+  const base = { path: '/a', methods: ['GET'], upstream: { url: 'http://x' } };
+  const routeWith = (extra: Record<string, unknown>) => ({ routes: [{ ...base, ...extra }] });
+
+  it('rejects header names and values Node could not send', () => {
+    const problems = problemsOf(
+      routeWith({
+        request_transform: { headers: { add: { 'Bad Name': 'x', 'X-Ok': 'line\r\nbreak' }, remove: ['Also Bad'] } },
+        auth: { type: 'api_key', header: 'X API Key', keys: ['k'] },
+      }),
+    );
+    for (const field of ['add.Bad Name', 'add.X-Ok', 'remove[0]']) {
+      assert.ok(problems.some((p) => p.includes(`request_transform.headers.${field}:`)), field);
+    }
+    assert.ok(problems.some((p) => p.startsWith('routes[0].auth.header:')));
+  });
+
+  it('rejects unsafe or conflicting mapping paths', () => {
+    const mapping = { user: 'name', 'user.id': 'userId', '__proto__.polluted': 'x', 'meta.ok': 'constructor.prototype' };
+    const problems = problemsOf(routeWith({ request_transform: { body: { mapping } } }));
+    assert.ok(problems.some((p) => p.includes('mapping.user: conflicts with "user.id"')));
+    assert.ok(problems.some((p) => p.includes('"__proto__.polluted" is not a safe dot path')));
+    assert.ok(problems.some((p) => p.includes('"constructor.prototype" is not a safe dot path')));
+  });
+
+  it('checks template variables inside envelope lists and rejects cyclic aliases', () => {
+    const listed = problemsOf(routeWith({ response_transform: { body: { envelope: { items: [{ data: '$boddy' }] } } } }));
+    assert.deepEqual(listed, ['routes[0].response_transform.body.envelope.items[0].data: unknown variable "$boddy"']);
+
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    const cycle = problemsOf(routeWith({ response_transform: { body: { envelope: cyclic } } }));
+    assert.deepEqual(cycle, ['routes[0].response_transform.body.envelope.self: must not contain a cyclic YAML alias']);
+  });
+
+  it('allows empty literals and keeps special-named headers', () => {
+    const config = validateConfig(
+      routeWith({
+        // JSON.parse, because an object literal's __proto__ key sets the prototype instead.
+        request_transform: { headers: { add: JSON.parse('{"X-Empty": "", "__proto__": "kept"}') } },
+        response_transform: { body: { envelope: { message: '' } } },
+      }),
+    );
+    const add = config.routes[0]!.features.request_transform!.headers!.add;
+    assert.equal(add['X-Empty'], '');
+    assert.ok(Object.hasOwn(add, '__proto__'));
+  });
+});
