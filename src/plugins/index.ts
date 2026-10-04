@@ -4,6 +4,7 @@ import { circuitBreakerPlugin } from './circuit-breaker.ts';
 import { rateLimitPlugin } from './rate-limit.ts';
 import { requestTransformPlugin } from './request-transform.ts';
 import { responseTransformPlugin } from './response-transform.ts';
+import { retryPlugin } from './retry.ts';
 
 /**
  * Every config feature, in request-pipeline order: the first entry is the
@@ -23,5 +24,5 @@ export const plugins: readonly Plugin[] = [
 
   circuitBreakerPlugin, // circuit_breaker (#7): outside retry, one count per logical request
 
-  // retry (#6): innermost, re-invokes the forwarder
+  retryPlugin, // retry (#6): innermost, re-invokes the forwarder
 ];
