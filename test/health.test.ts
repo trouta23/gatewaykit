@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import net from 'node:net';
 import type { AddressInfo } from 'node:net';
 import { describe, it } from 'node:test';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -148,8 +149,8 @@ async function listenOnPortFetchRefuses(): Promise<Awaited<ReturnType<typeof lis
   throw new Error('no fetch-refused port is free');
 }
 
-/** Runs one round of real HTTP probes against `url + path` and reports whether the target is healthy. */
-async function probeOnce(url: string, path: string, interval = '10s'): Promise<boolean> {
+/** Real HTTP health checks (threshold 1) for a single target at `url`. */
+function realChecker(url: string, path: string, interval = '10s') {
   const route = validateConfig({
     routes: [
       { path: '/svc', methods: ['GET'], upstream: { url }, health_check: { path, interval, unhealthy_threshold: 1 } },
@@ -158,12 +159,49 @@ async function probeOnce(url: string, path: string, interval = '10s'): Promise<b
   const cleanups: Array<() => void> = [];
   const ctx: BuildContext = { now: () => 0, onClose: (cleanup) => cleanups.push(cleanup) };
   const checker = startHealthChecks(route.upstream.targets, route.features.health_check!, ctx);
+  return {
+    checkNow: () => checker.checkNow(),
+    healthy: () => checker.isHealthy(route.upstream.targets[0]!),
+    close: () => cleanups.forEach((cleanup) => cleanup()),
+  };
+}
+
+/** Runs one round of real HTTP probes against `url + path` and reports whether the target is healthy. */
+async function probeOnce(url: string, path: string, interval = '10s'): Promise<boolean> {
+  const checks = realChecker(url, path, interval);
   try {
-    await checker.checkNow();
-    return checker.isHealthy(route.upstream.targets[0]!);
+    await checks.checkNow();
+    return checks.healthy();
   } finally {
-    cleanups.forEach((cleanup) => cleanup());
+    checks.close();
   }
+}
+
+/** A raw TCP upstream, so it can answer a plain GET with "101 Switching Protocols". */
+async function listenRaw() {
+  const state = { answer: 'switch' as 'switch' | 'ok', requests: 0 };
+  const sockets = new Set<net.Socket>();
+  const server = net.createServer((socket) => {
+    sockets.add(socket);
+    socket.on('close', () => sockets.delete(socket));
+    socket.on('error', () => {});
+    socket.once('data', () => {
+      state.requests += 1;
+      if (state.answer === 'switch') {
+        // Left open, as an upgraded connection would be.
+        socket.write('HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: probe\r\n\r\n');
+      } else {
+        socket.end('HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok');
+      }
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+  const close = (): Promise<void> =>
+    new Promise((resolve) => {
+      for (const socket of sockets) socket.destroy();
+      server.close(() => resolve());
+    });
+  return { state, port: (server.address() as AddressInfo).port, close };
 }
 
 describe('HTTP probe', () => {
@@ -183,6 +221,22 @@ describe('HTTP probe', () => {
       assert.equal(await probeOnce(`http://127.0.0.1:${upstream.port}/base/`, '/healthz?ready=1'), true);
       assert.deepEqual(upstream.seen, ['/base/healthz?ready=1']);
     } finally {
+      await upstream.close();
+    }
+  });
+
+  it('settles a 101 upgrade answer as a failure, and later probes still run', { timeout: 3_000 }, async () => {
+    const upstream = await listenRaw();
+    const checks = realChecker(`http://127.0.0.1:${upstream.port}`, '/healthz', '50ms');
+    try {
+      await checks.checkNow();
+      assert.equal(checks.healthy(), false);
+      upstream.state.answer = 'ok';
+      await checks.checkNow();
+      assert.equal(upstream.state.requests, 2, 'the 101 probe did not leave the target stuck as in flight');
+      assert.equal(checks.healthy(), true);
+    } finally {
+      checks.close();
       await upstream.close();
     }
   });

@@ -94,7 +94,15 @@ function probePath(target: URL, path: string): string {
  */
 function httpProbe(timeoutMs: number, stopped: AbortSignal): Probe {
   return (target, path) =>
-    new Promise((resolve, reject) => {
+    new Promise((resolve) => {
+      // Settles exactly once, whichever event comes first. A probe that never
+      // settled would leave its target marked in flight and stop all later probes.
+      let settled = false;
+      const settle = (healthy: boolean): void => {
+        if (settled) return;
+        settled = true;
+        resolve(healthy);
+      };
       const transport = target.protocol === 'https:' ? https : http;
       const req = transport.request({
         protocol: target.protocol,
@@ -108,9 +116,17 @@ function httpProbe(timeoutMs: number, stopped: AbortSignal): Probe {
         // Only the status matters. Destroying the body means a stalled one can't hold the socket.
         res.destroy();
         const status = res.statusCode ?? 0;
-        resolve(status >= 200 && status < 300);
+        settle(status >= 200 && status < 300);
       });
-      req.on('error', reject);
+      // A 101 upgrade emits neither 'response' nor 'error'. It isn't a health answer.
+      req.on('upgrade', (_res, socket) => {
+        socket.destroy();
+        settle(false);
+      });
+      // Connection failures, the timeout and shutdown all surface as 'error'.
+      req.on('error', () => settle(false));
+      // Anything else that ends the request before an answer.
+      req.on('close', () => settle(false));
       req.end();
     });
 }
