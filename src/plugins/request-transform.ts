@@ -3,20 +3,22 @@ import type { Plugin } from '../pipeline.ts';
 import { withoutHopByHop } from '../proxy/headers.ts';
 import { resolveTemplate, transformHeaders, withoutGatewayOwnedHeaders } from './template.ts';
 
-// The forwarder reads these to re-declare the upstream body's framing.
-const FRAMING_HEADERS = ['content-length', 'transfer-encoding'];
+// Never stripped here: Host is never hop-by-hop (the forwarder derives
+// X-Forwarded-Host from it), and the forwarder reads the framing headers to
+// re-declare the upstream body's framing.
+const ALWAYS_KEPT = ['host', 'content-length', 'transfer-encoding'];
 
 /**
  * Applies the client's hop-by-hop stripping before the transform instead of
  * after it. Otherwise a client could send `Connection: x-trusted` and the
  * forwarder would delete the gateway's own `X-Trusted` addition, and a
  * transform that removed `Connection` would let nominated headers through.
- * Framing headers are kept for the forwarder.
+ * Host and framing headers are always kept.
  */
 function withoutClientHopByHop(headers: IncomingHttpHeaders): IncomingHttpHeaders {
   const forwardable = withoutHopByHop(headers);
   return Object.fromEntries(
-    Object.entries(headers).filter(([name]) => Object.hasOwn(forwardable, name) || FRAMING_HEADERS.includes(name)),
+    Object.entries(headers).filter(([name]) => Object.hasOwn(forwardable, name) || ALWAYS_KEPT.includes(name)),
   );
 }
 

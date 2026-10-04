@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import http from 'node:http';
+import net from 'node:net';
 import type { IncomingHttpHeaders } from 'node:http';
 import { describe, it } from 'node:test';
 import type { RouteConfig } from '../src/config/types.ts';
@@ -255,6 +257,79 @@ describe('client Connection nominations through the gateway', () => {
     } finally {
       await gateway.close();
       await mocks.closeAll();
+    }
+  });
+});
+
+/** An upstream that echoes the raw header lines it received; Node's parsed headers drop "__proto__". */
+async function startRawHeaderEcho(): Promise<{ url: string; close: () => Promise<void> }> {
+  const server = http.createServer((req, res) => res.end(JSON.stringify(req.rawHeaders)));
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address() as net.AddressInfo;
+  return {
+    url: `http://127.0.0.1:${port}`,
+    close: () => new Promise((resolve) => {
+      server.close(() => resolve());
+      server.closeAllConnections();
+    }),
+  };
+}
+
+/** HTTP/1.0 allows a request without Host, which fetch and node:http never send. */
+function requestWithoutHost(baseUrl: string, path: string, headers: string): Promise<string> {
+  const { port } = new URL(baseUrl);
+  return new Promise((resolve, reject) => {
+    const socket = net.connect(Number(port), '127.0.0.1', () => socket.write(`GET ${path} HTTP/1.0\r\n${headers}\r\n`));
+    let data = '';
+    socket.on('data', (chunk) => (data += chunk));
+    socket.on('end', () => resolve(data.slice(data.indexOf('\r\n\r\n') + 4)));
+    socket.on('error', reject);
+  });
+}
+
+describe('forwarded identity through the gateway', () => {
+  it('a client cannot forge X-Forwarded-Host by nominating Host in Connection', async () => {
+    const mocks = await startMocks('echo');
+    const gateway = await startGateway({
+      routes: [
+        {
+          path: '/t', methods: ['GET'], upstream: { url: mocks.echo.url },
+          request_transform: { headers: { add: { 'X-Gateway': 'yes' } } },
+        },
+        { path: '/plain', methods: ['GET'], upstream: { url: mocks.echo.url } },
+      ],
+    });
+    try {
+      const nominated = await rawRequest(gateway.url, '/t', {
+        headers: { Connection: 'host', 'X-Forwarded-Host': 'attacker.example' },
+      });
+      assert.equal(JSON.parse(nominated.body).headers['x-forwarded-host'], new URL(gateway.url).host, 'Host is never hop-by-hop');
+
+      const hostless = await requestWithoutHost(gateway.url, '/plain', 'X-Forwarded-Host: attacker.example\r\n');
+      assert.equal(JSON.parse(hostless).headers['x-forwarded-host'], undefined, 'no Host means no X-Forwarded-Host');
+    } finally {
+      await gateway.close();
+      await mocks.closeAll();
+    }
+  });
+
+  it('a configured "__proto__" header addition reaches the upstream', async () => {
+    const upstream = await startRawHeaderEcho();
+    const gateway = await startGateway({
+      routes: [
+        {
+          path: '/proto', methods: ['GET'], upstream: { url: upstream.url },
+          request_transform: { headers: { add: JSON.parse('{"__proto__": "gateway"}') } },
+        },
+      ],
+    });
+    try {
+      const res = await fetch(`${gateway.url}/proto`);
+      const raw = (await res.json()) as string[];
+      assert.equal(raw[raw.indexOf('__proto__') + 1], 'gateway');
+    } finally {
+      await gateway.close();
+      await upstream.close();
     }
   });
 });

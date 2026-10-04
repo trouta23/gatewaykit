@@ -20,9 +20,9 @@ export function withoutHopByHop(headers: IncomingHttpHeaders): OutgoingHttpHeade
     .split(',')
     .map((name) => name.trim().toLowerCase())
     .filter(Boolean);
-  const result: OutgoingHttpHeaders = {};
-  for (const [name, value] of Object.entries(headers)) {
-    if (value !== undefined && !HOP_BY_HOP.has(name) && !listed.includes(name)) result[name] = value;
-  }
-  return result;
+  // fromEntries defines own properties: plain assignment of a "__proto__" name
+  // would invoke the prototype setter and silently drop that header.
+  return Object.fromEntries(
+    Object.entries(headers).filter(([name, value]) => value !== undefined && !HOP_BY_HOP.has(name) && !listed.includes(name)),
+  );
 }
